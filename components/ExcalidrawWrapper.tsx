@@ -5,9 +5,9 @@ export interface ExcalidrawRef {
   addElements: (elements: any[]) => boolean;
   getSceneData: () => { elements: any[]; appState: any };
   loadSceneData: (elements: any[]) => void;
+  exportSelectedToImage: () => Promise<string | null>; // 导出选区 Base64
 }
 
-// 构建 100% 原生合格的 Excalidraw 矢量图元（无需外部转换工具）
 function createExcalidrawElement(raw: any, index: number): any {
   if (!raw || typeof raw !== "object") return null;
 
@@ -34,7 +34,6 @@ function createExcalidrawElement(raw: any, index: number): any {
   let width = Number(raw.width) || (finalType === "text" ? 140 : 200);
   let height = Number(raw.height) || (finalType === "text" ? 30 : 60);
 
-  // 基础通用元数据
   const base: any = {
     id: raw.id || `el_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`,
     type: finalType,
@@ -63,7 +62,6 @@ function createExcalidrawElement(raw: any, index: number): any {
     locked: false,
   };
 
-  // 文本专属字段
   if (finalType === "text") {
     const textContent = String(raw.text ?? raw.content ?? raw.label ?? "文本");
     const fontSize = Number(raw.fontSize) || 16;
@@ -76,12 +74,10 @@ function createExcalidrawElement(raw: any, index: number): any {
     base.containerId = null;
     base.originalText = textContent;
     base.lineHeight = 1.25;
-    // 根据文本长度自动预估宽高
     base.width = Math.max(textContent.length * (fontSize * 0.8), 30);
     base.height = fontSize * 1.4;
   }
 
-  // 线条与箭头专属坐标点矩阵
   if (finalType === "line" || finalType === "arrow") {
     let points: [number, number][] = [[0, 0], [Math.max(width, 20), 0]];
     if (raw.x1 !== undefined && raw.x2 !== undefined) {
@@ -111,11 +107,13 @@ function createExcalidrawElement(raw: any, index: number): any {
 const ExcalidrawWrapper = forwardRef<ExcalidrawRef, { boardId?: string }>((props, ref) => {
   const [ExcalidrawComponent, setExcalidrawComponent] = useState<any>(null);
   const apiRef = useRef<any>(null);
+  const exportToBlobRef = useRef<any>(null);
 
   useEffect(() => {
     let mounted = true;
     import("@excalidraw/excalidraw").then((mod) => {
       if (mounted) {
+        exportToBlobRef.current = mod.exportToBlob;
         setExcalidrawComponent(() => mod.Excalidraw);
       }
     });
@@ -129,40 +127,24 @@ const ExcalidrawWrapper = forwardRef<ExcalidrawRef, { boardId?: string }>((props
     () => ({
       addElements: (newElements: any[]) => {
         const api = apiRef.current;
-        if (!api) {
-          console.error("[Excalidraw] 画布 API 尚未初始化完成");
-          return false;
-        }
+        if (!api) return false;
 
-        if (!Array.isArray(newElements) || newElements.length === 0) {
-          return false;
-        }
-
-        // 1. 构建符合规范的图元对象
         const validList: any[] = [];
         newElements.forEach((raw, i) => {
           try {
             const el = createExcalidrawElement(raw, i);
             if (el) validList.push(el);
-          } catch (e) {
-            console.warn("[Excalidraw] 忽略单个异常图元:", e);
-          }
+          } catch (e) {}
         });
 
         if (validList.length === 0) return false;
 
-        console.log(`[Excalidraw] 准备注入 ${validList.length} 个元素:`, validList);
-
-        // 2. 直通 updateScene
         const currentElements = api.getSceneElements() || [];
-        const nextElements = [...currentElements, ...validList];
-
         api.updateScene({
-          elements: nextElements,
+          elements: [...currentElements, ...validList],
           commitToHistory: true,
         });
 
-        // 3. 自动缩放并聚焦居中
         setTimeout(() => {
           if (api.scrollToContent) {
             api.scrollToContent(validList, { fitToContent: true, animate: true, duration: 300 });
@@ -180,6 +162,43 @@ const ExcalidrawWrapper = forwardRef<ExcalidrawRef, { boardId?: string }>((props
           apiRef.current.updateScene({ elements });
         }
       },
+      // 导出选区/全画布为 Base64 图片
+      exportSelectedToImage: async () => {
+        const api = apiRef.current;
+        const exportToBlob = exportToBlobRef.current;
+        if (!api || !exportToBlob) return null;
+
+        const elements = api.getSceneElements();
+        if (!elements || elements.length === 0) return null;
+
+        const appState = api.getAppState();
+        // 优先获取选中的元素，若未框选则导出全画板元素
+        const selectedElementIds = appState?.selectedElementIds || {};
+        const hasSelection = Object.values(selectedElementIds).some(Boolean);
+
+        const targetElements = hasSelection
+          ? elements.filter((el: any) => selectedElementIds[el.id])
+          : elements;
+
+        if (targetElements.length === 0) return null;
+
+        const blob = await exportToBlob({
+          elements: targetElements,
+          appState: {
+            ...appState,
+            exportWithDarkMode: false,
+            exportBackground: true,
+          },
+          files: api.getFiles(),
+          mimeType: "image/png",
+        });
+
+        return new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
+      },
     }),
     []
   );
@@ -189,13 +208,10 @@ const ExcalidrawWrapper = forwardRef<ExcalidrawRef, { boardId?: string }>((props
   }
 
   return (
-    <div className="w-full h-full relative" style={{ height: "100%", width: "100%" }}>
+    <div className="w-full h-full relative">
       <ExcalidrawComponent
         excalidrawAPI={(api: any) => {
           apiRef.current = api;
-          if (typeof window !== "undefined") {
-            (window as any).__excalidrawAPI = api;
-          }
         }}
         langCode="zh-CN"
         theme="light"
