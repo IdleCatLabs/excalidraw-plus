@@ -1,6 +1,6 @@
 # excalidraw-plus
 
-Excalidraw 增强版 - 在开源白板工具 [Excalidraw](https://excalidraw.com) 基础上，深度集成 **AI 智能绘图助手**、**选区生成代码**、**1:N 会话管理**、**MinIO 多租户存储隔离**、**两级项目分组管理**、**RBAC 权限体系** 及 **只读外链公开分享** 等能力。
+Excalidraw 增强版 - 在开源白板工具 [Excalidraw](https://excalidraw.com) 基础上，深度集成 **AI 智能绘图助手**、**选区生成代码**、**1:N 会话管理**、**MinIO 多用户存储隔离**、**两级项目分组管理**、**RBAC 权限体系** 及 **只读外链公开分享** 等能力。
 
 ---
 
@@ -176,14 +176,14 @@ docker compose up -d --build
 
 ---
 
-## 🔒 存储与多租户架构设计
+## 🔒 存储与多用户架构设计
 
 ```text
 excalidraw-scenes/ (MinIO Bucket)
 ├── system/
 │   └── users.json                  # 全局团队用户白名单字典
 ├── users/
-│   └── {userId}/                   # 各租户独立隔离空间
+│   └── {userId}/                   # 各用户独立隔离空间
 │       ├── projects.json           # 个人项目分组列表
 │       └── scenes/
 │           └── {boardId}.json      # 草图元数据、图元数据与 1:N 会话历史
