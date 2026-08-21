@@ -2,10 +2,11 @@
 import React, { forwardRef, useImperativeHandle, useState, useEffect, useRef } from "react";
 
 export interface ExcalidrawRef {
-  addElements: (elements: any[]) => boolean;
+  addElements: (elements: any[], mode?: "append" | "replace") => boolean;
   getSceneData: () => { elements: any[]; appState: any };
   loadSceneData: (elements: any[]) => void;
-  exportSelectedToImage: () => Promise<string | null>; // 导出选区 Base64
+  exportSelectedToImage: () => Promise<string | null>;
+  getCompactElements: () => any[];
 }
 
 function createExcalidrawElement(raw: any, index: number): any {
@@ -47,7 +48,7 @@ function createExcalidrawElement(raw: any, index: number): any {
     fillStyle: backgroundColor !== "transparent" ? "solid" : "hachure",
     strokeWidth: Number(raw.strokeWidth) || 1.5,
     strokeStyle: "solid",
-    roughness: 0,
+    roughness: 1, // 还原经典手绘草图线条粗糙质感
     opacity: 100,
     groupIds: [],
     frameId: null,
@@ -64,9 +65,10 @@ function createExcalidrawElement(raw: any, index: number): any {
 
   if (finalType === "text") {
     const textContent = String(raw.text ?? raw.content ?? raw.label ?? "文本");
-    const fontSize = Number(raw.fontSize) || 16;
+    const fontSize = Number(raw.fontSize) || 18;
     base.text = textContent;
     base.fontSize = fontSize;
+    // 还原 1: Virgil 经典 Excalidraw 手写草图字体
     base.fontFamily = 1;
     base.textAlign = raw.textAlign || "left";
     base.verticalAlign = raw.verticalAlign || "top";
@@ -74,7 +76,7 @@ function createExcalidrawElement(raw: any, index: number): any {
     base.containerId = null;
     base.originalText = textContent;
     base.lineHeight = 1.25;
-    base.width = Math.max(textContent.length * (fontSize * 0.8), 30);
+    base.width = Math.max(textContent.length * (fontSize * 0.9), 30);
     base.height = fontSize * 1.4;
   }
 
@@ -125,7 +127,7 @@ const ExcalidrawWrapper = forwardRef<ExcalidrawRef, { boardId?: string }>((props
   useImperativeHandle(
     ref,
     () => ({
-      addElements: (newElements: any[]) => {
+      addElements: (newElements: any[], mode = "append") => {
         const api = apiRef.current;
         if (!api) return false;
 
@@ -140,16 +142,28 @@ const ExcalidrawWrapper = forwardRef<ExcalidrawRef, { boardId?: string }>((props
         if (validList.length === 0) return false;
 
         const currentElements = api.getSceneElements() || [];
+        const nextElements = mode === "replace" ? validList : [...currentElements, ...validList];
+
         api.updateScene({
-          elements: [...currentElements, ...validList],
+          elements: nextElements,
           commitToHistory: true,
         });
 
+        // 自动聚焦居中并固定缩放为 80%
         setTimeout(() => {
           if (api.scrollToContent) {
-            api.scrollToContent(validList, { fitToContent: true, animate: true, duration: 300 });
+            api.scrollToContent(validList, { fitToContent: false, animate: true, duration: 250 });
           }
-        }, 100);
+          setTimeout(() => {
+            const currentAppState = api.getAppState();
+            api.updateScene({
+              appState: {
+                ...currentAppState,
+                zoom: { value: 0.8 as any },
+              },
+            });
+          }, 60);
+        }, 60);
 
         return true;
       },
@@ -159,10 +173,39 @@ const ExcalidrawWrapper = forwardRef<ExcalidrawRef, { boardId?: string }>((props
       }),
       loadSceneData: (elements: any[]) => {
         if (apiRef.current) {
-          apiRef.current.updateScene({ elements });
+          const cleanLoaded = (elements || []).map((el: any) => ({
+            ...el,
+            fontFamily: el.type === "text" ? 1 : el.fontFamily,
+            roughness: 1,
+          }));
+
+          apiRef.current.updateScene({ 
+            elements: cleanLoaded,
+            appState: {
+              ...apiRef.current.getAppState(),
+              zoom: { value: 0.8 as any },
+            }
+          });
         }
       },
-      // 导出选区/全画布为 Base64 图片
+      getCompactElements: () => {
+        if (!apiRef.current) return [];
+        const raw = apiRef.current.getSceneElements() || [];
+        return raw
+          .filter((el: any) => !el.isDeleted)
+          .map((el: any) => ({
+            id: el.id,
+            type: el.type,
+            x: Math.round(el.x),
+            y: Math.round(el.y),
+            width: Math.round(el.width),
+            height: Math.round(el.height),
+            text: el.text || undefined,
+            fontSize: el.fontSize || undefined,
+            strokeColor: el.strokeColor || undefined,
+            backgroundColor: el.backgroundColor || undefined,
+          }));
+      },
       exportSelectedToImage: async () => {
         const api = apiRef.current;
         const exportToBlob = exportToBlobRef.current;
@@ -172,7 +215,6 @@ const ExcalidrawWrapper = forwardRef<ExcalidrawRef, { boardId?: string }>((props
         if (!elements || elements.length === 0) return null;
 
         const appState = api.getAppState();
-        // 优先获取选中的元素，若未框选则导出全画板元素
         const selectedElementIds = appState?.selectedElementIds || {};
         const hasSelection = Object.values(selectedElementIds).some(Boolean);
 
@@ -212,6 +254,11 @@ const ExcalidrawWrapper = forwardRef<ExcalidrawRef, { boardId?: string }>((props
       <ExcalidrawComponent
         excalidrawAPI={(api: any) => {
           apiRef.current = api;
+        }}
+        initialData={{
+          appState: {
+            zoom: { value: 0.8 as any },
+          },
         }}
         langCode="zh-CN"
         theme="light"

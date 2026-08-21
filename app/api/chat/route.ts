@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// 鲁棒 JSON 提取器（自动剔除 Markdown 标记、前后文本干扰并修复常见 JSON 尾逗号）
 function extractJson(raw: string): any {
   if (!raw) return null;
   let str = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
@@ -10,7 +9,6 @@ function extractJson(raw: string): any {
   try {
     return JSON.parse(str);
   } catch (e) {
-    // 提取最外层的 { ... } 区块
     const start = str.indexOf("{");
     const end = str.lastIndexOf("}");
     if (start !== -1 && end !== -1 && end > start) {
@@ -18,7 +16,6 @@ function extractJson(raw: string): any {
       try {
         return JSON.parse(sub);
       } catch (e2) {
-        // 清理末尾逗号与非法控制字符
         const cleaned = sub
           .replace(/,\s*([\}\]])/g, "$1")
           .replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
@@ -33,7 +30,6 @@ function extractJson(raw: string): any {
   }
 }
 
-// 模型协议路由
 function getModelEndpointConfig(model: string, baseUrl: string) {
   const cleanBase = baseUrl.replace(/\/+$/, "");
   const m = model.toLowerCase();
@@ -50,28 +46,40 @@ function getModelEndpointConfig(model: string, baseUrl: string) {
 export async function POST(req: Request) {
   const startTime = Date.now();
   try {
-    const { prompt, model } = await req.json();
+    const { prompt, model, currentElements = [] } = await req.json();
     const apiKey = (process.env.AI_API_KEY || "").trim();
     const baseUrl = (process.env.AI_BASE_URL || "https://opencode.ai/zen/go/v1").trim();
 
     const targetModel = model || "deepseek-v4-flash";
     const config = getModelEndpointConfig(targetModel, baseUrl);
 
+    const hasExistingCanvas = Array.isArray(currentElements) && currentElements.length > 0;
+
     const systemPrompt = `你是一个专业的 UI/UX 架构师与 Excalidraw 矢量图表设计专家。
-请根据用户的输入严格以 JSON 格式输出：
+请根据用户的输入和当前画布状态严格以 JSON 格式输出：
 
-【规则】：
+【当前画布状态】：
+${hasExistingCanvas ? `画布当前已有 ${currentElements.length} 个元素，精简结构如下：\n${JSON.stringify(currentElements)}` : "画布目前为空。"}
+
+【严格输出规则】：
 1. 意图分类：
-   - 若用户打招呼/闲聊/咨询非绘图内容：
-     { "type": "chat", "reply": "你的友好回答", "elements": [] }
-   - 若用户要求绘制界面、架构图、流程图：
-     { "type": "draw", "summary": "简要设计说明", "elements": [矢量元素列表] }
+   - 若用户仅打招呼、闲聊或提问非画图内容：
+     { "type": "chat", "reply": "你的回答", "elements": [] }
+   - 若用户提出画图/改图需求：
+     { "type": "draw", "mode": "replace"|"append", "summary": "修改或绘制说明", "elements": [矢量元素列表] }
 
-2. 绘图元素规范 (type 仅限: rectangle, ellipse, diamond, text, line, arrow)：
-   - 所有元素颜色字段统一使用 strokeColor 与 backgroundColor（不要使用 color）。
-   - 线条 (line/arrow) 支持提供 x1, y1, x2, y2 坐标。
-   - 绘制手机 App 时，首先画一个外层深色背景矩形 (如 x:100, y:100, width:375, height:720, backgroundColor:"#0f172a", strokeColor:"#334155")，文字颜色使用 "#ffffff" 或 "#94a3b8"。
-3. 只能输出纯 JSON，绝对不要输出任何 markdown 格式或开场白。`;
+2. 模式判断（关键）：
+   - 【局部修改/调整】（如“字体缩小”、“修改时间为09:00”、“把开关改成关/灰色”、“删掉第三个闹钟”）：
+     * 设置 "mode": "replace"
+     * 必须保留当前画布中其他不需要修改的元素，仅修改目标元素（如调整对应 text 的 fontSize、修改文字或删除），返回完整的更新后元素列表。
+   - 【追加新页面/组件】（如“在右边画一个设置页”）：
+     * 设置 "mode": "append"
+     * 计算 X 轴偏移（在当前元素最大 X 坐标右侧 100px 处开始绘制，如 x: 550），避免覆盖已有界面。
+   - 【全新重画】（当画布为空或用户明确说“重新画一个...”）：
+     * 设置 "mode": "replace"
+
+3. 格式约束：
+   - 只能输出纯 JSON，绝对不要输出任何 markdown 代码块或废话。`;
 
     let rawText = "";
     let reasoningContent = "";
@@ -95,7 +103,7 @@ export async function POST(req: Request) {
         }),
       });
 
-      if (!resp.ok) throw new Error(`上游 Anthropic 接口异常 (HTTP ${resp.status}): ${await resp.text()}`);
+      if (!resp.ok) throw new Error(`Anthropic 异常 (HTTP ${resp.status}): ${await resp.text()}`);
       const raw = await resp.json();
       rawText = raw.content?.[0]?.text || "{}";
       if (raw.usage) {
@@ -124,7 +132,7 @@ export async function POST(req: Request) {
         }),
       });
 
-      if (!resp.ok) throw new Error(`上游 API 异常 (HTTP ${resp.status}): ${await resp.text()}`);
+      if (!resp.ok) throw new Error(`API 异常 (HTTP ${resp.status}): ${await resp.text()}`);
       const raw = await resp.json();
       const choice = raw.choices?.[0]?.message;
       rawText = choice?.content || "{}";
@@ -138,6 +146,7 @@ export async function POST(req: Request) {
     if (parsedData && (parsedData.type === "draw" || (Array.isArray(parsedData.elements) && parsedData.elements.length > 0))) {
       return NextResponse.json({
         type: "draw",
+        mode: parsedData.mode || "replace",
         summary: parsedData.summary || "生成了矢量草图",
         elements: parsedData.elements || [],
         reasoning: reasoningContent,
