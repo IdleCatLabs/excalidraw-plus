@@ -1,0 +1,66 @@
+# ===== 依赖 =====
+node_modules/
+.pnp
+.pnp.js
+
+# ===== 构建产物 =====
+.next/
+out/
+dist/
+build/
+next-env.d.ts
+
+# ===== 环境变量 =====
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# ===== 日志 =====
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# ===== 测试/覆盖率 =====
+coverage/
+.nyc_output/
+
+# ===== MinIO 数据目录 =====
+minio_data/
+
+# ===== 编辑器/IDE =====
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ===== macOS 系统文件 =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===== 缓存 =====
+.eslintcache
+.turbo/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# ===== 类型检查 =====
+*.tsbuildinfo
+
+# ===== Docker =====
+*.tmp

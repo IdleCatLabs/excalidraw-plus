@@ -1,0 +1,57 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: excalidraw-plus
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    # 使用 env_file 强制加载同级目录下的 .env
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - AI_API_KEY=${AI_API_KEY}
+      - AI_BASE_URL=${AI_BASE_URL:-https://opencode.ai/zen/go/v1}
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-admin_user}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-StrongPassword123}
+      - MINIO_BUCKET=${MINIO_BUCKET:-excalidraw-scenes}
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  minio:
+    image: minio/minio:RELEASE.2024-01-18T22-51-28Z
+    container_name: excalidraw-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    env_file:
+      - .env
+    volumes:
+      - ./minio_data:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-01-16T16-06-34Z
+    container_name: excalidraw-minio-init
+    depends_on:
+      - minio
+    env_file:
+      - .env
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc alias set localminio http://minio:9000 ${MINIO_ROOT_USER:-admin_user} ${MINIO_ROOT_PASSWORD:-StrongPassword123}); do
+        echo '等待 MinIO 服务就绪...';
+        sleep 2;
+      done;
+      /usr/bin/mc mb --ignore-existing localminio/${MINIO_BUCKET:-excalidraw-scenes};
+      echo 'MinIO Bucket 准备就绪!';
+      exit 0;
+      "
+
+volumes:
+  minio_data:
