@@ -1,170 +1,96 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from 'next/server';
+import { getOpenAIClientForRequest } from '@/lib/user-llm';
 
-export const dynamic = "force-dynamic";
+export const runtime = 'nodejs';
 
-function extractJson(raw: string): any {
-  if (!raw) return null;
-  let str = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+const SYSTEM_PROMPT = `You are a professional UI/UX designer and Excalidraw diagram architect.
 
+CRITICAL DESIGN & CONTRAST RULES:
+1. ALWAYS start with the OUTER PHONE FRAME (Chassis):
+   - Element[0] MUST BE: { "type": "rectangle", "x": 100, "y": 80, "width": 390, "height": 844, "strokeColor": "#09090b", "strokeWidth": 3, "backgroundColor": "#ffffff", "roughness": 0, "roundness": { "type": 3 } }
+2. ALWAYS include the TOP STATUS BAR:
+   - Dynamic island / notch: { "type": "rectangle", "x": 235, "y": 95, "width": 120, "height": 30, "backgroundColor": "#09090b", "strokeColor": "#09090b", "roundness": { "type": 3 } }
+   - Time text: { "type": "text", "x": 130, "y": 100, "text": "9:41", "fontSize": 14, "strokeColor": "#09090b" }
+3. ALWAYS include the MANDATORY BOTTOM NAVIGATION TAB BAR (底部导航栏):
+   - Tab bar container: { "type": "rectangle", "x": 100, "y": 840, "width": 390, "height": 84, "backgroundColor": "#ffffff", "strokeColor": "#e2e8f0", "strokeWidth": 1.5, "roundness": { "type": 3 } }
+   - Divider top line: { "type": "line", "x": 100, "y": 840, "width": 390, "height": 0, "points": [[0,0], [390,0]], "strokeColor": "#cbd5e1", "strokeWidth": 1 }
+   - Tab items (e.g. 世界时钟, 闹钟, 秒表, 计时器): generate horizontal text labels across the tab bar with one active tab highlighted in blue/orange.
+4. Component Contrast:
+   - Cards / Rows: "backgroundColor": "#f8fafc" or "#ffffff", "strokeColor": "#cbd5e1", "strokeWidth": 1.5, "roundness": { "type": 3 }.
+   - Main text: "#0f172a", Subtext: "#64748b", Active toggles: "#22c55e" or "#f97316".
+   - Roughness MUST BE 0 for clean modern UI.
+
+OUTPUT FORMAT:
+1. The output MUST START with \`\`\`json on the VERY FIRST LINE.
+2. Inside, output a JSON array of elements with accurate coordinates fitting inside the 390x844 frame.`;
+
+export async function POST(req: NextRequest) {
   try {
-    return JSON.parse(str);
-  } catch (e) {
-    const start = str.indexOf("{");
-    const end = str.lastIndexOf("}");
-    if (start !== -1 && end !== -1 && end > start) {
-      const sub = str.substring(start, end + 1);
-      try {
-        return JSON.parse(sub);
-      } catch (e2) {
-        const cleaned = sub
-          .replace(/,\s*([\}\]])/g, "$1")
-          .replace(/[\u0000-\u001F\u007F-\u009F]/g, "");
+    const { messages, model, temperature, maxTokens } = await req.json();
+
+    let client, config;
+    try {
+      const authResult = await getOpenAIClientForRequest();
+      client = authResult.client;
+      config = authResult.config;
+    } catch (authError: any) {
+      if (authError.message === 'UNAUTHORIZED') {
+        return NextResponse.json({ error: '请先登录' }, { status: 401 });
+      }
+      if (authError.message === 'NO_LLM_CONFIG') {
+        return NextResponse.json(
+          {
+            error: '未配置大模型',
+            code: 'NO_LLM_CONFIG',
+            message: '您尚未配置个人大模型 API，请点击设置进行配置。',
+          },
+          { status: 400 }
+        );
+      }
+      throw authError;
+    }
+
+    const targetModel = model || config.defaultModel || config.models[0];
+    const targetMaxTokens = maxTokens || config.maxTokens || 8192;
+    const targetTemperature = temperature ?? 0.2;
+
+    const stream = await client.chat.completions.create({
+      model: targetModel,
+      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+      temperature: targetTemperature,
+      max_tokens: targetMaxTokens,
+      stream: true,
+    });
+
+    const encoder = new TextEncoder();
+    const readableStream = new ReadableStream({
+      async start(controller) {
         try {
-          return JSON.parse(cleaned);
-        } catch (e3) {
-          return null;
+          for await (const chunk of stream) {
+            const content = chunk.choices[0]?.delta?.content || '';
+            if (content) {
+              controller.enqueue(encoder.encode(content));
+            }
+          }
+          controller.close();
+        } catch (streamError) {
+          controller.error(streamError);
         }
-      }
-    }
-    return null;
-  }
-}
+      },
+    });
 
-function getModelEndpointConfig(model: string, baseUrl: string) {
-  const cleanBase = baseUrl.replace(/\/+$/, "");
-  const m = model.toLowerCase();
-
-  if (m.startsWith("qwen") || m.startsWith("minimax")) {
-    return { type: "anthropic", url: `${cleanBase}/messages` };
-  }
-  if (m.startsWith("grok") || m.startsWith("gpt-5.6") || m.startsWith("muse-spark")) {
-    return { type: "responses", url: `${cleanBase}/responses` };
-  }
-  return { type: "openai", url: `${cleanBase}/chat/completions` };
-}
-
-export async function POST(req: Request) {
-  const startTime = Date.now();
-  try {
-    const { prompt, model, currentElements = [] } = await req.json();
-    const apiKey = (process.env.AI_API_KEY || "").trim();
-    const baseUrl = (process.env.AI_BASE_URL || "https://opencode.ai/zen/go/v1").trim();
-
-    const targetModel = model || "deepseek-v4-flash";
-    const config = getModelEndpointConfig(targetModel, baseUrl);
-
-    const hasExistingCanvas = Array.isArray(currentElements) && currentElements.length > 0;
-
-    const systemPrompt = `你是一个专业的 UI/UX 架构师与 Excalidraw 矢量图表设计专家。
-请根据用户的输入和当前画布状态严格以 JSON 格式输出：
-
-【当前画布状态】：
-${hasExistingCanvas ? `画布当前已有 ${currentElements.length} 个元素，精简结构如下：\n${JSON.stringify(currentElements)}` : "画布目前为空。"}
-
-【严格输出规则】：
-1. 意图分类：
-   - 若用户仅打招呼、闲聊或提问非画图内容：
-     { "type": "chat", "reply": "你的回答", "elements": [] }
-   - 若用户提出画图/改图需求：
-     { "type": "draw", "mode": "replace"|"append", "summary": "修改或绘制说明", "elements": [矢量元素列表] }
-
-2. 模式判断（关键）：
-   - 【局部修改/调整】（如“字体缩小”、“修改时间为09:00”、“把开关改成关/灰色”、“删掉第三个闹钟”）：
-     * 设置 "mode": "replace"
-     * 必须保留当前画布中其他不需要修改的元素，仅修改目标元素（如调整对应 text 的 fontSize、修改文字或删除），返回完整的更新后元素列表。
-   - 【追加新页面/组件】（如“在右边画一个设置页”）：
-     * 设置 "mode": "append"
-     * 计算 X 轴偏移（在当前元素最大 X 坐标右侧 100px 处开始绘制，如 x: 550），避免覆盖已有界面。
-   - 【全新重画】（当画布为空或用户明确说“重新画一个...”）：
-     * 设置 "mode": "replace"
-
-3. 格式约束：
-   - 只能输出纯 JSON，绝对不要输出任何 markdown 代码块或废话。`;
-
-    let rawText = "";
-    let reasoningContent = "";
-    let usageData = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-
-    if (config.type === "anthropic") {
-      const resp = await fetch(config.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "Authorization": `Bearer ${apiKey}`,
-          "anthropic-version": "2023-06-01",
-          "User-Agent": "Cline/3.0.0",
-        },
-        body: JSON.stringify({
-          model: targetModel,
-          max_tokens: 4096,
-          system: systemPrompt,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-
-      if (!resp.ok) throw new Error(`Anthropic 异常 (HTTP ${resp.status}): ${await resp.text()}`);
-      const raw = await resp.json();
-      rawText = raw.content?.[0]?.text || "{}";
-      if (raw.usage) {
-        usageData = {
-          prompt_tokens: raw.usage.input_tokens || 0,
-          completion_tokens: raw.usage.output_tokens || 0,
-          total_tokens: (raw.usage.input_tokens || 0) + (raw.usage.output_tokens || 0),
-        };
-      }
-    } else {
-      const resp = await fetch(config.url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-          "User-Agent": "Cline/3.0.0",
-        },
-        body: JSON.stringify({
-          model: targetModel,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: prompt },
-          ],
-          temperature: 0.2,
-          max_tokens: 4096,
-        }),
-      });
-
-      if (!resp.ok) throw new Error(`API 异常 (HTTP ${resp.status}): ${await resp.text()}`);
-      const raw = await resp.json();
-      const choice = raw.choices?.[0]?.message;
-      rawText = choice?.content || "{}";
-      reasoningContent = choice?.reasoning_content || "";
-      if (raw.usage) usageData = raw.usage;
-    }
-
-    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    const parsedData = extractJson(rawText);
-
-    if (parsedData && (parsedData.type === "draw" || (Array.isArray(parsedData.elements) && parsedData.elements.length > 0))) {
-      return NextResponse.json({
-        type: "draw",
-        mode: parsedData.mode || "replace",
-        summary: parsedData.summary || "生成了矢量草图",
-        elements: parsedData.elements || [],
-        reasoning: reasoningContent,
-        usage: usageData,
-        duration: `${duration}s`,
-      });
-    }
-
-    return NextResponse.json({
-      type: "chat",
-      reply: parsedData?.reply || parsedData?.summary || rawText,
-      elements: [],
-      reasoning: reasoningContent,
-      usage: usageData,
-      duration: `${duration}s`,
+    return new Response(readableStream, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+      },
     });
   } catch (error: any) {
-    console.error("[/api/chat] 错误:", error.message);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('Chat API Error:', error);
+    return NextResponse.json(
+      { error: error.message || '模型生成失败，请检查网络或配置' },
+      { status: 500 }
+    );
   }
 }

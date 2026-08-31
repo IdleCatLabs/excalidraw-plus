@@ -1,271 +1,209 @@
-"use client";
-import React, { forwardRef, useImperativeHandle, useState, useEffect, useRef } from "react";
+'use client';
+
+import React, { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
+import dynamic from 'next/dynamic';
+
+const Excalidraw = dynamic(
+  () => import('@excalidraw/excalidraw').then((mod) => mod.Excalidraw),
+  { ssr: false }
+);
 
 export interface ExcalidrawRef {
-  addElements: (elements: any[], mode?: "append" | "replace") => boolean;
-  getSceneData: () => { elements: any[]; appState: any };
-  loadSceneData: (elements: any[]) => void;
-  exportSelectedToImage: () => Promise<string | null>;
-  getCompactElements: () => any[];
+  getSceneData: () => { elements: any[]; appState: any; files: any };
+  getSceneElements: () => any[];
+  getSelectedElements: () => any[];
+  getAppState: () => any;
+  getFiles: () => any;
+  updateScene: (sceneData: {
+    elements?: any[];
+    appState?: any;
+    files?: any;
+    commitToHistory?: boolean;
+  }) => void;
+  scrollToContent: (target?: any, opts?: { fitToViewport?: boolean; animate?: boolean }) => void;
+  resetScene: () => void;
+  exportSelectedToImage: (opts?: any) => Promise<string>;
+  excalidrawAPI: any;
+  [key: string]: any;
 }
 
-function createExcalidrawElement(raw: any, index: number): any {
-  if (!raw || typeof raw !== "object") return null;
-
-  let type = String(raw.type || "rectangle").toLowerCase();
-  if (type === "circle") type = "ellipse";
-  if (["box", "card", "button", "container", "frame", "navbar", "tabbar", "header", "footer", "modal", "badge"].includes(type)) {
-    type = "rectangle";
-  }
-  if (["label", "heading", "title", "paragraph", "span", "subheading"].includes(type)) {
-    type = "text";
-  }
-
-  const validTypes = ["rectangle", "ellipse", "diamond", "text", "arrow", "line"];
-  const finalType = validTypes.includes(type) ? type : "rectangle";
-
-  const strokeColor = raw.strokeColor || raw.color || (raw.backgroundColor === "#0f172a" ? "#64748b" : "#1e293b");
-  const backgroundColor = raw.backgroundColor && raw.backgroundColor !== "transparent" ? raw.backgroundColor : "transparent";
-
-  let x = Number(raw.x);
-  if (isNaN(x)) x = 100;
-  let y = Number(raw.y);
-  if (isNaN(y)) y = 100;
-  
-  let width = Number(raw.width) || (finalType === "text" ? 140 : 200);
-  let height = Number(raw.height) || (finalType === "text" ? 30 : 60);
-
-  const base: any = {
-    id: raw.id || `el_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`,
-    type: finalType,
-    x,
-    y,
-    width,
-    height,
-    angle: 0,
-    strokeColor,
-    backgroundColor,
-    fillStyle: backgroundColor !== "transparent" ? "solid" : "hachure",
-    strokeWidth: Number(raw.strokeWidth) || 1.5,
-    strokeStyle: "solid",
-    roughness: 1, // 还原经典手绘草图线条粗糙质感
-    opacity: 100,
-    groupIds: [],
-    frameId: null,
-    roundness: finalType === "rectangle" ? { type: 3 } : null,
-    seed: Math.floor(Math.random() * 100000),
-    version: 1,
-    versionNonce: Math.floor(Math.random() * 100000),
-    isDeleted: false,
-    boundElements: null,
-    updated: Date.now(),
-    link: null,
-    locked: false,
-  };
-
-  if (finalType === "text") {
-    const textContent = String(raw.text ?? raw.content ?? raw.label ?? "文本");
-    const fontSize = Number(raw.fontSize) || 18;
-    base.text = textContent;
-    base.fontSize = fontSize;
-    // 还原 1: Virgil 经典 Excalidraw 手写草图字体
-    base.fontFamily = 1;
-    base.textAlign = raw.textAlign || "left";
-    base.verticalAlign = raw.verticalAlign || "top";
-    base.baseline = fontSize;
-    base.containerId = null;
-    base.originalText = textContent;
-    base.lineHeight = 1.25;
-    base.width = Math.max(textContent.length * (fontSize * 0.9), 30);
-    base.height = fontSize * 1.4;
-  }
-
-  if (finalType === "line" || finalType === "arrow") {
-    let points: [number, number][] = [[0, 0], [Math.max(width, 20), 0]];
-    if (raw.x1 !== undefined && raw.x2 !== undefined) {
-      const sx = Number(raw.x1) || 0;
-      const sy = Number(raw.y1) || 0;
-      const ex = Number(raw.x2) || 0;
-      const ey = Number(raw.y2) || 0;
-      base.x = sx;
-      base.y = sy;
-      points = [[0, 0], [ex - sx, ey - sy]];
-      base.width = Math.max(Math.abs(ex - sx), 1);
-      base.height = Math.max(Math.abs(ey - sy), 1);
-    } else if (Array.isArray(raw.points) && raw.points.length >= 2) {
-      points = raw.points;
-    }
-    base.points = points;
-    base.lastCommittedPoint = null;
-    base.startBinding = null;
-    base.endBinding = null;
-    base.startArrowhead = null;
-    base.endArrowhead = finalType === "arrow" ? "arrow" : null;
-  }
-
-  return base;
+interface ExcalidrawWrapperProps {
+  initialData?: any;
+  onChange?: (elements: any[], appState: any, files: any) => void;
+  [key: string]: any;
 }
 
-const ExcalidrawWrapper = forwardRef<ExcalidrawRef, { boardId?: string }>((props, ref) => {
-  const [ExcalidrawComponent, setExcalidrawComponent] = useState<any>(null);
-  const apiRef = useRef<any>(null);
-  const exportToBlobRef = useRef<any>(null);
+const ExcalidrawWrapper = forwardRef<ExcalidrawRef, ExcalidrawWrapperProps>(
+  ({ initialData, onChange, ...props }, ref) => {
+    const [excalidrawAPI, setExcalidrawAPI] = useState<any>(null);
 
-  useEffect(() => {
-    let mounted = true;
-    import("@excalidraw/excalidraw").then((mod) => {
-      if (mounted) {
-        exportToBlobRef.current = mod.exportToBlob;
-        setExcalidrawComponent(() => mod.Excalidraw);
-      }
-    });
-    return () => {
-      mounted = false;
+    useImperativeHandle(
+      ref,
+      () => ({
+        getSceneData: () => {
+          if (!excalidrawAPI) return { elements: [], appState: {}, files: {} };
+          return {
+            elements: typeof excalidrawAPI.getSceneElements === 'function' ? excalidrawAPI.getSceneElements() : [],
+            appState: typeof excalidrawAPI.getAppState === 'function' ? excalidrawAPI.getAppState() : {},
+            files: typeof excalidrawAPI.getFiles === 'function' ? excalidrawAPI.getFiles() : {},
+          };
+        },
+        getSceneElements: () => {
+          return excalidrawAPI && typeof excalidrawAPI.getSceneElements === 'function'
+            ? excalidrawAPI.getSceneElements()
+            : [];
+        },
+        getSelectedElements: () => {
+          if (!excalidrawAPI) return [];
+          const elements = excalidrawAPI.getSceneElements() || [];
+          const appState = excalidrawAPI.getAppState() || {};
+          const selectedIds = appState.selectedElementIds || {};
+          const selected = elements.filter((el: any) => selectedIds[el.id] && !el.isDeleted);
+          return selected.length > 0 ? selected : elements.filter((el: any) => !el.isDeleted);
+        },
+        getAppState: () => {
+          return excalidrawAPI && typeof excalidrawAPI.getAppState === 'function'
+            ? excalidrawAPI.getAppState()
+            : {};
+        },
+        getFiles: () => {
+          return excalidrawAPI && typeof excalidrawAPI.getFiles === 'function'
+            ? excalidrawAPI.getFiles()
+            : {};
+        },
+        updateScene: (sceneData) => {
+          if (excalidrawAPI && typeof excalidrawAPI.updateScene === 'function') {
+            excalidrawAPI.updateScene(sceneData);
+          }
+        },
+        scrollToContent: (target, opts) => {
+          if (excalidrawAPI && typeof excalidrawAPI.scrollToContent === 'function') {
+            excalidrawAPI.scrollToContent(target || excalidrawAPI.getSceneElements(), {
+              fitToViewport: true,
+              animate: true,
+              ...opts,
+            });
+          }
+        },
+        resetScene: () => {
+          if (excalidrawAPI && typeof excalidrawAPI.resetScene === 'function') {
+            excalidrawAPI.resetScene();
+          }
+        },
+        // 导出选区/画布为 Base64 PNG 供 AI 代码生成器读取
+        exportSelectedToImage: async (opts?: any): Promise<string> => {
+          if (!excalidrawAPI) {
+            throw new Error('Excalidraw 画板实例尚未初始化完成');
+          }
+
+          const elements = excalidrawAPI.getSceneElements() || [];
+          const appState = excalidrawAPI.getAppState() || {};
+          const files = excalidrawAPI.getFiles() || {};
+
+          const selectedIds = appState.selectedElementIds || {};
+          let targetElements = elements.filter((el: any) => selectedIds[el.id] && !el.isDeleted);
+
+          // 若未框选任何元素，则默认导出整个画布内有效元素
+          if (targetElements.length === 0) {
+            targetElements = elements.filter((el: any) => !el.isDeleted);
+          }
+
+          if (targetElements.length === 0) {
+            throw new Error('画板内暂无有效图元，请先绘制图表后再生成代码');
+          }
+
+          const { exportToBlob } = await import('@excalidraw/excalidraw');
+          const blob = await exportToBlob({
+            elements: targetElements,
+            appState: {
+              ...appState,
+              exportWithDarkMode: false,
+              exportBackground: true,
+              viewBackgroundColor: '#ffffff',
+            },
+            files,
+            mimeType: 'image/png',
+            ...opts,
+          });
+
+          return new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        },
+        excalidrawAPI,
+      }),
+      [excalidrawAPI]
+    );
+
+    const mergedInitialData = {
+      ...initialData,
+      appState: {
+        viewBackgroundColor: '#f5f5f7',
+        currentItemFontFamily: 1,
+        ...initialData?.appState,
+      },
     };
-  }, []);
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      addElements: (newElements: any[], mode = "append") => {
-        const api = apiRef.current;
-        if (!api) return false;
+    useEffect(() => {
+      if (!excalidrawAPI) return;
 
-        const validList: any[] = [];
-        newElements.forEach((raw, i) => {
-          try {
-            const el = createExcalidrawElement(raw, i);
-            if (el) validList.push(el);
-          } catch (e) {}
-        });
+      (window as any).__EXCALIDRAW_API__ = excalidrawAPI;
 
-        if (validList.length === 0) return false;
+      const handleCustomDrawAction = (e: CustomEvent) => {
+        const { mode, elements } = e.detail || {};
+        if (!Array.isArray(elements) || elements.length === 0) return;
 
-        const currentElements = api.getSceneElements() || [];
-        const nextElements = mode === "replace" ? validList : [...currentElements, ...validList];
+        let finalElements = elements;
+        if (mode === 'append' && typeof excalidrawAPI.getSceneElements === 'function') {
+          const currentElements = excalidrawAPI.getSceneElements() || [];
+          finalElements = [...currentElements, ...elements];
+        }
 
-        api.updateScene({
-          elements: nextElements,
+        excalidrawAPI.updateScene({
+          elements: finalElements,
+          appState: { viewBackgroundColor: '#f5f5f7' },
           commitToHistory: true,
         });
 
-        // 自动聚焦居中并固定缩放为 80%
         setTimeout(() => {
-          if (api.scrollToContent) {
-            api.scrollToContent(validList, { fitToContent: false, animate: true, duration: 250 });
-          }
-          setTimeout(() => {
-            const currentAppState = api.getAppState();
-            api.updateScene({
-              appState: {
-                ...currentAppState,
-                zoom: { value: 0.8 as any },
-              },
+          if (typeof excalidrawAPI.scrollToContent === 'function') {
+            excalidrawAPI.scrollToContent(elements, {
+              fitToViewport: true,
+              animate: true,
             });
-          }, 60);
-        }, 60);
+          }
+        }, 150);
+      };
 
-        return true;
-      },
-      getSceneData: () => ({
-        elements: apiRef.current ? apiRef.current.getSceneElements() : [],
-        appState: apiRef.current ? apiRef.current.getAppState() : {},
-      }),
-      loadSceneData: (elements: any[]) => {
-        if (apiRef.current) {
-          const cleanLoaded = (elements || []).map((el: any) => ({
-            ...el,
-            fontFamily: el.type === "text" ? 1 : el.fontFamily,
-            roughness: 1,
-          }));
+      window.addEventListener('excalidraw:apply-scene' as any, handleCustomDrawAction);
 
-          apiRef.current.updateScene({ 
-            elements: cleanLoaded,
-            appState: {
-              ...apiRef.current.getAppState(),
-              zoom: { value: 0.8 as any },
-            }
-          });
-        }
-      },
-      getCompactElements: () => {
-        if (!apiRef.current) return [];
-        const raw = apiRef.current.getSceneElements() || [];
-        return raw
-          .filter((el: any) => !el.isDeleted)
-          .map((el: any) => ({
-            id: el.id,
-            type: el.type,
-            x: Math.round(el.x),
-            y: Math.round(el.y),
-            width: Math.round(el.width),
-            height: Math.round(el.height),
-            text: el.text || undefined,
-            fontSize: el.fontSize || undefined,
-            strokeColor: el.strokeColor || undefined,
-            backgroundColor: el.backgroundColor || undefined,
-          }));
-      },
-      exportSelectedToImage: async () => {
-        const api = apiRef.current;
-        const exportToBlob = exportToBlobRef.current;
-        if (!api || !exportToBlob) return null;
+      return () => {
+        window.removeEventListener('excalidraw:apply-scene' as any, handleCustomDrawAction);
+      };
+    }, [excalidrawAPI]);
 
-        const elements = api.getSceneElements();
-        if (!elements || elements.length === 0) return null;
-
-        const appState = api.getAppState();
-        const selectedElementIds = appState?.selectedElementIds || {};
-        const hasSelection = Object.values(selectedElementIds).some(Boolean);
-
-        const targetElements = hasSelection
-          ? elements.filter((el: any) => selectedElementIds[el.id])
-          : elements;
-
-        if (targetElements.length === 0) return null;
-
-        const blob = await exportToBlob({
-          elements: targetElements,
-          appState: {
-            ...appState,
-            exportWithDarkMode: false,
-            exportBackground: true,
-          },
-          files: api.getFiles(),
-          mimeType: "image/png",
-        });
-
-        return new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.readAsDataURL(blob);
-        });
-      },
-    }),
-    []
-  );
-
-  if (!ExcalidrawComponent) {
-    return <div className="h-full w-full flex items-center justify-center text-slate-400">正在载入画布引擎...</div>;
+    return (
+      <div className="w-full h-full relative bg-[#f5f5f7]">
+        <Excalidraw
+          excalidrawAPI={(api) => setExcalidrawAPI(api)}
+          initialData={mergedInitialData}
+          onChange={onChange}
+          UIOptions={{
+            canvasActions: {
+              loadScene: false,
+              export: false,
+            },
+          }}
+          {...props}
+        />
+      </div>
+    );
   }
+);
 
-  return (
-    <div className="w-full h-full relative">
-      <ExcalidrawComponent
-        excalidrawAPI={(api: any) => {
-          apiRef.current = api;
-        }}
-        initialData={{
-          appState: {
-            zoom: { value: 0.8 as any },
-          },
-        }}
-        langCode="zh-CN"
-        theme="light"
-      />
-    </div>
-  );
-});
+ExcalidrawWrapper.displayName = 'ExcalidrawWrapper';
 
-ExcalidrawWrapper.displayName = "ExcalidrawWrapper";
 export default ExcalidrawWrapper;

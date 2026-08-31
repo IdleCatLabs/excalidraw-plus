@@ -1,57 +1,132 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from 'next/server';
+import { getCurrentUser } from '@/lib/auth';
+import { getUserLLMConfig, saveUserLLMConfig, UserLLMConfig } from '@/lib/user-llm';
+import OpenAI from 'openai';
 
-export const dynamic = "force-dynamic";
-
+// GET: 获取当前用户的 LLM 配置和可用模型列表
 export async function GET() {
-  const apiKey = (process.env.AI_API_KEY || "").trim();
-  let baseUrl = (process.env.AI_BASE_URL || "https://opencode.ai/zen/go/v1").trim().replace(/\/+$/, "");
-  
-  // 精确拼接 Go 套餐的模型接口
-  const endpoint = baseUrl.endsWith("/v1") 
-    ? `${baseUrl}/models` 
-    : `${baseUrl}/v1/models`;
-
-  console.log(`[/api/models] 正在动态拉取 OpenCode Go 官方可用模型: ${endpoint}`);
-
   try {
-    const response = await fetch(endpoint, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "User-Agent": "Cline/3.0.0",
-      },
-      cache: "no-store",
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error(`[/api/models] 上游拉取失败 [HTTP ${response.status}]:`, errText);
-      return NextResponse.json(
-        { error: `获取模型列表失败 (HTTP ${response.status}): ${errText}` },
-        { status: response.status }
-      );
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: '未登录' }, { status: 401 });
     }
 
-    const data = await response.json();
-    // 兼容标准 OpenAI 规范 { data: [{ id: "...", ... }] } 或直接数组结构
-    const rawList = Array.isArray(data) ? data : (data.data || []);
+    const config = await getUserLLMConfig(user.username);
 
-    const models = rawList
-      .map((item: any) => {
-        const id = typeof item === "string" ? item : (item.id || item.name || "");
-        return {
-          label: id,
-          value: id,
-        };
-      })
-      .filter((m: any) => Boolean(m.value))
-      .sort((a: any, b: any) => a.label.localeCompare(b.label));
+    if (!config) {
+      return NextResponse.json({
+        configured: false,
+        config: null,
+        models: [],
+      });
+    }
 
-    console.log(`[/api/models] 成功拉取到 ${models.length} 个官方模型`);
-    return NextResponse.json({ models });
+    const maskedKey = config.apiKey
+      ? config.apiKey.length > 8
+        ? `${config.apiKey.slice(0, 3)}...${config.apiKey.slice(-4)}`
+        : '******'
+      : '';
+
+    return NextResponse.json({
+      configured: true,
+      config: {
+        ...config,
+        apiKeyMasked: maskedKey,
+      },
+      models: config.models || [],
+      defaultModel: config.defaultModel || config.models?.[0] || '',
+    });
   } catch (error: any) {
-    console.error("[/api/models] 请求异常:", error.message);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('获取模型配置失败:', error);
+    return NextResponse.json({ error: '获取模型配置失败' }, { status: 500 });
+  }
+}
+
+// POST: 保存/更新用户的 LLM 配置
+export async function POST(req: NextRequest) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: '未登录' }, { status: 401 });
+    }
+
+    const body = await req.json();
+    const { baseUrl, apiKey, models, defaultModel, maxTokens, temperature, testConnection } = body;
+
+    if (!baseUrl?.trim()) {
+      return NextResponse.json({ error: 'Base URL 不能为空' }, { status: 400 });
+    }
+
+    let finalApiKey = apiKey?.trim();
+    const existingConfig = await getUserLLMConfig(user.username);
+    if (finalApiKey && finalApiKey.includes('...') && existingConfig) {
+      finalApiKey = existingConfig.apiKey;
+    }
+
+    if (!finalApiKey) {
+      return NextResponse.json({ error: 'API Key 不能为空' }, { status: 400 });
+    }
+
+    const modelList = Array.isArray(models)
+      ? models
+      : typeof models === 'string'
+      ? models.split(/[\n,]+/).map((m: string) => m.trim()).filter(Boolean)
+      : [];
+
+    if (modelList.length === 0) {
+      return NextResponse.json({ error: '请至少指定一个模型名称' }, { status: 400 });
+    }
+
+    const newConfig: UserLLMConfig = {
+      providerType: 'openai_compatible',
+      baseUrl: baseUrl.trim(),
+      apiKey: finalApiKey,
+      models: modelList,
+      defaultModel: defaultModel || modelList[0],
+      maxTokens: Number(maxTokens) || 4096,
+      temperature: Number(temperature) ?? 0.7,
+    };
+
+    if (testConnection) {
+      try {
+        const testClient = new OpenAI({
+          baseURL: newConfig.baseUrl,
+          apiKey: newConfig.apiKey,
+          timeout: 12000, // 严格限制连通性探测在 12 秒内返回
+        });
+
+        // 优先探测网关 /models 列表（无需生成 Token，秒级返回）
+        try {
+          await testClient.models.list();
+        } catch {
+          // 若网关未开放 models 路由，使用最小轻量请求探测
+          await testClient.chat.completions.create({
+            model: newConfig.defaultModel || newConfig.models[0],
+            messages: [{ role: 'user', content: '1' }],
+            max_tokens: 3,
+          });
+        }
+      } catch (testError: any) {
+        return NextResponse.json(
+          {
+            error: `测试连通失败: ${testError?.message || '无法访问该模型服务'}`,
+            detail: testError?.toString(),
+          },
+          { status: 400 }
+        );
+      }
+    }
+
+    await saveUserLLMConfig(user.username, newConfig);
+
+    return NextResponse.json({
+      success: true,
+      message: '大模型配置已保存',
+      models: newConfig.models,
+      defaultModel: newConfig.defaultModel,
+    });
+  } catch (error: any) {
+    console.error('保存模型配置失败:', error);
+    return NextResponse.json({ error: error.message || '保存模型配置失败' }, { status: 500 });
   }
 }

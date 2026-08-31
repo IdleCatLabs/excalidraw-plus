@@ -2,10 +2,48 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #__next {
-  height: 100%;
-  width: 100%;
-  margin: 0;
-  padding: 0;
+:root {
+  --foreground-rgb: 0, 0, 0;
+  --background-start-rgb: 214, 219, 220;
+  --background-end-rgb: 255, 255, 255;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --foreground-rgb: 255, 255, 255;
+    --background-start-rgb: 0, 0, 0;
+    --background-end-rgb: 0, 0, 0;
+  }
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: #ffffff;
   overflow: hidden;
+}
+
+/* ==========================================================================
+   隐藏 Excalidraw 原生主菜单中的 "Excalidraw links" 与社交媒体外链
+   ========================================================================== */
+
+/* 隐藏带 GitHub / Discord / Twitter 链接的菜单项 */
+.excalidraw .dropdown-menu-item-link,
+.excalidraw a[href*="github.com/excalidraw"],
+.excalidraw a[href*="discord"],
+.excalidraw a[href*="twitter.com"],
+.excalidraw a[href*="x.com"] {
+  display: none !important;
+}
+
+/* 隐藏 "Excalidraw links" 标题分组 */
+.excalidraw .dropdown-menu-group:has(a[href*="github.com"]),
+.excalidraw .dropdown-menu-group:has(a[href*="discord"]),
+.excalidraw .dropdown-menu-group:has(a[href*="twitter.com"]),
+.excalidraw .dropdown-menu-group:has(a[href*="x.com"]) {
+  display: none !important;
+}
+
+/* 兜底兼容不支持 :has 的低版本渲染 */
+.excalidraw .dropdown-menu-group-title {
+  user-select: none;
 }
