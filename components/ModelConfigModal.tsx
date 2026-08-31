@@ -10,10 +10,10 @@ interface ModelConfigModalProps {
 }
 
 export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onClose, onSaved }) => {
-  const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
+  const [baseUrl, setBaseUrl] = useState('https://khub.idlecatlabs.net/v1');
   const [apiKey, setApiKey] = useState('');
-  const [modelsText, setModelsText] = useState('gpt-4o, gpt-4o-mini');
-  const [defaultModel, setDefaultModel] = useState('gpt-4o-mini');
+  const [modelsText, setModelsText] = useState('deepseek-v4-pro,deepseek-v4-flash,qwen3.7-plus,glm-5.2');
+  const [defaultModel, setDefaultModel] = useState('deepseek-v4-flash');
   const [maxTokens, setMaxTokens] = useState('4096');
   const [temperature, setTemperature] = useState('0.7');
 
@@ -179,7 +179,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onCl
                 type="text"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="https://api.openai.com/v1 或 https://api.deepseek.com/v1"
+                placeholder="https://khub.idlecatlabs.net/v1 或 https://api.deepseek.com/v1"
                 className="w-full text-sm pl-9 pr-3 py-2 bg-white dark:bg-zinc-800 rounded-md border border-zinc-300 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
             </div>
