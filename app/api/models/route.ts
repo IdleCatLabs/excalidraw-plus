@@ -1,132 +1,74 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth';
-import { getUserLLMConfig, saveUserLLMConfig, UserLLMConfig } from '@/lib/user-llm';
-import OpenAI from 'openai';
+import { minioClient, BUCKET_NAME, ensureBucketExists } from '@/lib/minio';
 
-// GET: 获取当前用户的 LLM 配置和可用模型列表
+export const runtime = 'nodejs';
+
+const LLM_CONFIG_KEY = 'config/llm-config.json';
+
+// 获取 AI 配置
 export async function GET() {
   try {
-    const user = await getCurrentUser();
-    if (!user) {
-      return NextResponse.json({ error: '未登录' }, { status: 401 });
+    await ensureBucketExists();
+
+    const stream = await minioClient.getObject(BUCKET_NAME, LLM_CONFIG_KEY);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
     }
-
-    const config = await getUserLLMConfig(user.username);
-
-    if (!config) {
-      return NextResponse.json({
-        configured: false,
-        config: null,
-        models: [],
-      });
-    }
-
-    const maskedKey = config.apiKey
-      ? config.apiKey.length > 8
-        ? `${config.apiKey.slice(0, 3)}...${config.apiKey.slice(-4)}`
-        : '******'
-      : '';
+    const raw = Buffer.concat(chunks).toString('utf-8');
+    const config = JSON.parse(raw);
 
     return NextResponse.json({
-      configured: true,
-      config: {
-        ...config,
-        apiKeyMasked: maskedKey,
-      },
-      models: config.models || [],
-      defaultModel: config.defaultModel || config.models?.[0] || '',
+      configured: !!config.apiKey,
+      models: config.models || ['qwen3.7-plus', 'deepseek-chat'],
+      defaultModel: config.defaultModel || 'qwen3.7-plus',
+      baseUrl: config.baseUrl || '',
     });
-  } catch (error: any) {
-    console.error('获取模型配置失败:', error);
-    return NextResponse.json({ error: '获取模型配置失败' }, { status: 500 });
+  } catch (err: any) {
+    // 默认回退到环境变量或空配置
+    const envApiKey = process.env.OPENAI_API_KEY || process.env.DASHSCOPE_API_KEY;
+    const envBaseUrl = process.env.OPENAI_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+
+    return NextResponse.json({
+      configured: !!envApiKey,
+      models: ['qwen3.7-plus', 'deepseek-chat', 'deepseek-coder'],
+      defaultModel: 'qwen3.7-plus',
+      baseUrl: envBaseUrl,
+    });
   }
 }
 
-// POST: 保存/更新用户的 LLM 配置
+// 保存 AI 配置到 MinIO
 export async function POST(req: NextRequest) {
   try {
-    const user = await getCurrentUser();
-    if (!user) {
-      return NextResponse.json({ error: '未登录' }, { status: 401 });
-    }
-
     const body = await req.json();
-    const { baseUrl, apiKey, models, defaultModel, maxTokens, temperature, testConnection } = body;
+    const { apiKey, baseUrl, models, defaultModel } = body;
 
-    if (!baseUrl?.trim()) {
-      return NextResponse.json({ error: 'Base URL 不能为空' }, { status: 400 });
-    }
-
-    let finalApiKey = apiKey?.trim();
-    const existingConfig = await getUserLLMConfig(user.username);
-    if (finalApiKey && finalApiKey.includes('...') && existingConfig) {
-      finalApiKey = existingConfig.apiKey;
-    }
-
-    if (!finalApiKey) {
+    if (!apiKey) {
       return NextResponse.json({ error: 'API Key 不能为空' }, { status: 400 });
     }
 
-    const modelList = Array.isArray(models)
-      ? models
-      : typeof models === 'string'
-      ? models.split(/[\n,]+/).map((m: string) => m.trim()).filter(Boolean)
-      : [];
+    await ensureBucketExists();
 
-    if (modelList.length === 0) {
-      return NextResponse.json({ error: '请至少指定一个模型名称' }, { status: 400 });
-    }
-
-    const newConfig: UserLLMConfig = {
-      providerType: 'openai_compatible',
-      baseUrl: baseUrl.trim(),
-      apiKey: finalApiKey,
-      models: modelList,
-      defaultModel: defaultModel || modelList[0],
-      maxTokens: Number(maxTokens) || 4096,
-      temperature: Number(temperature) ?? 0.7,
+    const configData = {
+      apiKey,
+      baseUrl: baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      models: models && models.length > 0 ? models : ['qwen3.7-plus', 'deepseek-chat'],
+      defaultModel: defaultModel || 'qwen3.7-plus',
+      updatedAt: new Date().toISOString(),
     };
 
-    if (testConnection) {
-      try {
-        const testClient = new OpenAI({
-          baseURL: newConfig.baseUrl,
-          apiKey: newConfig.apiKey,
-          timeout: 12000, // 严格限制连通性探测在 12 秒内返回
-        });
-
-        // 优先探测网关 /models 列表（无需生成 Token，秒级返回）
-        try {
-          await testClient.models.list();
-        } catch {
-          // 若网关未开放 models 路由，使用最小轻量请求探测
-          await testClient.chat.completions.create({
-            model: newConfig.defaultModel || newConfig.models[0],
-            messages: [{ role: 'user', content: '1' }],
-            max_tokens: 3,
-          });
-        }
-      } catch (testError: any) {
-        return NextResponse.json(
-          {
-            error: `测试连通失败: ${testError?.message || '无法访问该模型服务'}`,
-            detail: testError?.toString(),
-          },
-          { status: 400 }
-        );
-      }
-    }
-
-    await saveUserLLMConfig(user.username, newConfig);
-
-    return NextResponse.json({
-      success: true,
-      message: '大模型配置已保存',
-      models: newConfig.models,
-      defaultModel: newConfig.defaultModel,
+    const buffer = Buffer.from(JSON.stringify(configData), 'utf-8');
+    await minioClient.putObject(BUCKET_NAME, LLM_CONFIG_KEY, buffer, buffer.length, {
+      'Content-Type': 'application/json',
     });
+
+    return NextResponse.json({ success: true, message: 'AI 大模型配置已持久化至 MinIO' });
   } catch (error: any) {
-    console.error('保存模型配置失败:', error);
-    return NextResponse.json({ error: error.message || '保存模型配置失败' }, { status: 500 });
+    console.error('[MinIO] Save LLM Config Error:', error);
+    return NextResponse.json(
+      { error: error.message || '保存配置失败' },
+      { status: 500 }
+    );
   }
 }
