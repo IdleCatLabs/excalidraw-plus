@@ -1,81 +1,103 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { X, Copy, Check, Eye, Code, Smartphone, Tablet, Monitor, RotateCcw, Loader2 } from 'lucide-react';
+import {
+  Eye,
+  Code2,
+  Smartphone,
+  Tablet,
+  Monitor,
+  RotateCcw,
+  Copy,
+  Check,
+  X,
+  AlertCircle,
+  Loader2,
+} from 'lucide-react';
+import { LOCAL_STORAGE_LLM_KEY, LLMConfig } from './ModelConfigModal';
 
 interface CodeGenerationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  excalidrawRef: any;
+  selectedElements: any[];
 }
 
-export const CodeGenerationModal: React.FC<CodeGenerationModalProps> = ({
+export default function CodeGenerationModal({
   isOpen,
   onClose,
-  excalidrawRef,
-}) => {
-  const [framework, setFramework] = useState<'vue3' | 'react'>('vue3');
-  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
-  const [deviceSize, setDeviceSize] = useState<'mobile' | 'tablet' | 'desktop'>('mobile');
-  const [code, setCode] = useState<string>('');
+  selectedElements,
+}: CodeGenerationModalProps) {
+  const [framework, setFramework] = useState<'vue' | 'react'>('vue');
+  const [activeTab, setActiveTab] = useState<'preview' | 'code'>('preview');
+  const [deviceSize, setDeviceSize] = useState<'mobile' | 'tablet' | 'desktop'>('desktop');
   const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  const [code, setCode] = useState<string>('');
+  const [error, setError] = useState<string>('');
   const [copied, setCopied] = useState<boolean>(false);
 
-  const generateCode = async () => {
-    if (!excalidrawRef?.current) {
-      setError('画板尚未就绪');
+  useEffect(() => {
+    if (isOpen) {
+      handleGenerate();
+    } else {
+      setCode('');
+      setError('');
+    }
+  }, [isOpen, framework]);
+
+  const handleGenerate = async () => {
+    setError('');
+
+    // 1. 优先从 LocalStorage 中提取真实有效的用户大模型配置
+    let llmConfig: LLMConfig | null = null;
+    try {
+      const stored = localStorage.getItem(LOCAL_STORAGE_LLM_KEY);
+      if (stored) {
+        llmConfig = JSON.parse(stored);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
+    if (!llmConfig || !llmConfig.apiKey) {
+      setError('未配置大模型，请在侧边栏设置中添加 API Key');
       return;
     }
 
-    let targetElements: any[] = [];
-    if (typeof excalidrawRef.current.getSelectedElements === 'function') {
-      targetElements = excalidrawRef.current.getSelectedElements();
-    } else if (typeof excalidrawRef.current.getSceneElements === 'function') {
-      targetElements = excalidrawRef.current.getSceneElements();
-    }
-
-    if (!targetElements || targetElements.length === 0) {
-      setError('画板内暂无图元，请先框选组件或绘制图表');
+    if (!selectedElements || selectedElements.length === 0) {
+      setError('请先在画板上框选需要生成代码的元素');
       return;
     }
 
     setLoading(true);
-    setError(null);
-    setCode('');
 
     try {
       const res = await fetch('/api/generate-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          elements: targetElements,
+          elements: selectedElements,
           framework,
+          llmConfig: {
+            baseUrl: llmConfig.baseUrl,
+            apiKey: llmConfig.apiKey,
+            model: llmConfig.defaultModel || 'qwen3.7-plus',
+            maxTokens: llmConfig.maxTokens || 4096,
+          },
         }),
       });
 
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || '代码生成请求失败');
+      if (!res.ok || data.error) {
+        throw new Error(data.error || '代码生成失败，请检查大模型配置');
       }
 
       setCode(data.code || '');
     } catch (err: any) {
-      console.error('Code Generation Error:', err);
-      setError(err.message || '生成失败，请检查大模型网络连通');
+      setError(err.message || '网络请求发生错误');
     } finally {
       setLoading(false);
     }
   };
-
-  useEffect(() => {
-    if (isOpen) {
-      generateCode();
-    } else {
-      setCode('');
-      setError(null);
-    }
-  }, [isOpen, framework]);
 
   const handleCopy = () => {
     if (!code) return;
@@ -86,19 +108,64 @@ export const CodeGenerationModal: React.FC<CodeGenerationModalProps> = ({
 
   if (!isOpen) return null;
 
+  const generatePreviewDoc = () => {
+    if (!code) return '';
+    if (framework === 'vue') {
+      return `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <script src="https://cdn.tailwindcss.com"></script>
+          <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+        </head>
+        <body class="bg-gray-50 min-h-screen p-4 flex items-center justify-center">
+          <div id="app" class="w-full"></div>
+          <script>
+            const { createApp } = Vue;
+            const rawCode = ${JSON.stringify(code)};
+            const templateMatch = rawCode.match(/<template>([\\s\\S]*?)<\\/template>/);
+            const template = templateMatch ? templateMatch[1] : '<div class="p-4">' + rawCode + '</div>';
+            
+            createApp({
+              template: template,
+            }).mount('#app');
+          </script>
+        </body>
+        </html>
+      `;
+    }
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <script src="https://cdn.tailwindcss.com"></script>
+      </head>
+      <body class="bg-gray-50 min-h-screen p-4 flex items-center justify-center">
+        <div class="w-full max-w-xl mx-auto p-6 bg-white rounded-xl shadow">
+          <pre class="text-xs overflow-auto text-gray-700 font-mono">${code.replace(/</g, '&lt;')}</pre>
+        </div>
+      </body>
+      </html>
+    `;
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-6xl h-[88vh] flex flex-col shadow-2xl overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800 bg-zinc-900/80">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full h-[90vh] max-w-6xl flex flex-col shadow-2xl overflow-hidden text-zinc-100">
+        <div className="px-5 py-3 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/60">
           <div className="flex items-center gap-3">
-            {/* 视图切换 */}
-            <div className="flex bg-zinc-800 p-0.5 rounded-lg text-xs">
+            <div className="flex items-center bg-zinc-800 rounded-xl p-1 border border-zinc-700/50">
               <button
-                onClick={() => setViewMode('preview')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition ${
-                  viewMode === 'preview'
-                    ? 'bg-indigo-600 text-white shadow-sm'
+                type="button"
+                onClick={() => setActiveTab('preview')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                  activeTab === 'preview'
+                    ? 'bg-indigo-600 text-white'
                     : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
@@ -106,74 +173,83 @@ export const CodeGenerationModal: React.FC<CodeGenerationModalProps> = ({
                 实时预览
               </button>
               <button
-                onClick={() => setViewMode('code')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition ${
-                  viewMode === 'code'
-                    ? 'bg-indigo-600 text-white shadow-sm'
+                type="button"
+                onClick={() => setActiveTab('code')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                  activeTab === 'code'
+                    ? 'bg-indigo-600 text-white'
                     : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
-                <Code className="w-3.5 h-3.5" />
+                <Code2 className="w-3.5 h-3.5" />
                 查看源码
               </button>
             </div>
 
-            {/* 尺寸切换 */}
-            {viewMode === 'preview' && (
-              <div className="flex bg-zinc-800 p-0.5 rounded-lg text-xs">
+            {activeTab === 'preview' && (
+              <div className="flex items-center gap-1 bg-zinc-800/80 rounded-xl p-1 border border-zinc-700/50 text-zinc-400">
                 <button
+                  type="button"
                   onClick={() => setDeviceSize('mobile')}
-                  className={`p-1.5 rounded-md transition ${
-                    deviceSize === 'mobile' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                  className={`p-1.5 rounded-lg hover:text-white transition ${
+                    deviceSize === 'mobile' ? 'bg-zinc-700 text-white' : ''
                   }`}
-                  title="移动端"
+                  title="手机尺寸"
                 >
-                  <Smartphone className="w-3.5 h-3.5" />
+                  <Smartphone className="w-4 h-4" />
                 </button>
                 <button
+                  type="button"
                   onClick={() => setDeviceSize('tablet')}
-                  className={`p-1.5 rounded-md transition ${
-                    deviceSize === 'tablet' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                  className={`p-1.5 rounded-lg hover:text-white transition ${
+                    deviceSize === 'tablet' ? 'bg-zinc-700 text-white' : ''
                   }`}
-                  title="平板端"
+                  title="平板尺寸"
                 >
-                  <Tablet className="w-3.5 h-3.5" />
+                  <Tablet className="w-4 h-4" />
                 </button>
                 <button
+                  type="button"
                   onClick={() => setDeviceSize('desktop')}
-                  className={`p-1.5 rounded-md transition ${
-                    deviceSize === 'desktop' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                  className={`p-1.5 rounded-lg hover:text-white transition ${
+                    deviceSize === 'desktop' ? 'bg-zinc-700 text-white' : ''
                   }`}
-                  title="桌面端"
+                  title="桌面尺寸"
                 >
-                  <Monitor className="w-3.5 h-3.5" />
+                  <Monitor className="w-4 h-4" />
                 </button>
                 <button
-                  onClick={generateCode}
-                  className="p-1.5 text-zinc-400 hover:text-zinc-200 rounded-md"
+                  type="button"
+                  onClick={handleGenerate}
+                  className="p-1.5 rounded-lg hover:text-white transition ml-1"
                   title="重新生成"
                 >
-                  <RotateCcw className="w-3.5 h-3.5" />
+                  <RotateCcw className="w-4 h-4" />
                 </button>
               </div>
             )}
           </div>
 
           <div className="flex items-center gap-3">
-            {/* 框架选择 */}
-            <div className="flex bg-zinc-800 p-0.5 rounded-lg text-xs">
+            <div className="flex items-center bg-zinc-800 rounded-xl p-1 border border-zinc-700/50">
               <button
-                onClick={() => setFramework('vue3')}
-                className={`px-3 py-1.5 rounded-md font-medium transition ${
-                  framework === 'vue3' ? 'bg-emerald-600 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                type="button"
+                onClick={() => setFramework('vue')}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition ${
+                  framework === 'vue'
+                    ? 'bg-emerald-600 text-white'
+                    : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
                 Vue 3
               </button>
               <button
+                type="button"
                 onClick={() => setFramework('react')}
-                className={`px-3 py-1.5 rounded-md font-medium transition ${
-                  framework === 'react' ? 'bg-cyan-600 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition ${
+                  framework === 'react'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
                 React
@@ -181,63 +257,75 @@ export const CodeGenerationModal: React.FC<CodeGenerationModalProps> = ({
             </div>
 
             <button
+              type="button"
               onClick={handleCopy}
-              disabled={!code}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium transition disabled:opacity-50"
+              disabled={!code || loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-xl text-xs font-medium border border-zinc-700 transition disabled:opacity-50"
             >
-              {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-              {copied ? '已复制' : '复制代码'}
+              {copied ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  已复制
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  复制代码
+                </>
+              )}
             </button>
 
             <button
+              type="button"
               onClick={onClose}
-              className="p-1.5 text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-zinc-800 transition"
+              className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-xl transition"
             >
-              <X className="w-4 h-4" />
+              <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* Content Body */}
-        <div className="flex-1 overflow-hidden bg-zinc-950 flex items-center justify-center p-6 relative">
-          {loading ? (
-            <div className="flex flex-col items-center gap-3 text-zinc-400 text-xs">
-              <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
-              <span>AI 正在将选区图元解析转换为 {framework === 'vue3' ? 'Vue 3' : 'React'} 组件代码...</span>
+        <div className="flex-1 bg-zinc-950 p-6 overflow-hidden flex items-center justify-center relative">
+          {loading && (
+            <div className="flex flex-col items-center gap-3 text-zinc-400">
+              <Loader2 className="w-8 h-8 animate-spin text-indigo-500" />
+              <p className="text-sm">正在调用大模型生成代码中，请稍候...</p>
             </div>
-          ) : error ? (
-            <div className="max-w-md p-4 bg-rose-950/40 border border-rose-800/60 rounded-xl text-rose-300 text-xs text-center leading-relaxed">
-              {error}
+          )}
+
+          {!loading && error && (
+            <div className="flex items-center gap-2.5 px-5 py-3 rounded-2xl bg-red-950/40 border border-red-800/60 text-red-300 text-sm max-w-md text-center">
+              <AlertCircle className="w-5 h-5 shrink-0 text-red-400" />
+              <span>{error}</span>
             </div>
-          ) : viewMode === 'code' ? (
-            <pre className="w-full h-full p-4 font-mono text-xs text-zinc-200 overflow-auto bg-zinc-900/60 rounded-xl border border-zinc-800/80">
-              <code>{code}</code>
-            </pre>
-          ) : (
-            /* 预览容器 */
+          )}
+
+          {!loading && !error && activeTab === 'preview' && (
             <div
-              className={`h-full bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl border border-zinc-800 overflow-hidden flex flex-col transition-all duration-300 ${
+              className={`h-full bg-white rounded-xl shadow-2xl transition-all duration-300 overflow-hidden ${
                 deviceSize === 'mobile'
-                  ? 'w-[390px]'
+                  ? 'w-[375px]'
                   : deviceSize === 'tablet'
                   ? 'w-[768px]'
                   : 'w-full'
               }`}
             >
-              <div className="flex-1 overflow-auto p-4 flex flex-col justify-center items-center">
-                <div className="w-full h-full bg-slate-50 dark:bg-zinc-900 rounded-xl p-4 overflow-y-auto border border-zinc-200 dark:border-zinc-800">
-                  <div className="text-center text-xs text-zinc-400 mb-4 pb-2 border-b border-zinc-200 dark:border-zinc-800">
-                    代码已生成完毕，切换到「查看源码」可获取完整单文件组件
-                  </div>
-                  <pre className="text-[11px] font-mono text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">
-                    {code.slice(0, 1200)}...
-                  </pre>
-                </div>
-              </div>
+              <iframe
+                title="Code Preview"
+                srcDoc={generatePreviewDoc()}
+                className="w-full h-full border-0"
+                sandbox="allow-scripts allow-same-origin"
+              />
+            </div>
+          )}
+
+          {!loading && !error && activeTab === 'code' && (
+            <div className="w-full h-full rounded-xl bg-zinc-900 border border-zinc-800 p-4 overflow-auto font-mono text-sm text-zinc-200">
+              <pre className="whitespace-pre-wrap">{code}</pre>
             </div>
           )}
         </div>
       </div>
     </div>
   );
-};
+}

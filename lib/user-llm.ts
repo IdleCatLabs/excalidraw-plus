@@ -1,148 +1,212 @@
 import OpenAI from 'openai';
-import * as Minio from 'minio';
-import { getCurrentUser } from '@/lib/auth';
+import { minioClient, BUCKET_NAME } from './minio';
+import { getAuthUser } from './auth';
+import { NextRequest } from 'next/server';
 
 export interface UserLLMConfig {
-  providerType: 'openai_compatible';
+  protocol?: string;
   baseUrl: string;
   apiKey: string;
-  models: string[];
-  defaultModel?: string;
-  maxTokens?: number;
-  temperature?: number;
+  models: string;
+  defaultModel: string;
+  maxTokens: number;
 }
 
-// 解析 MinIO 连接地址与端口
-const rawEndpoint = process.env.S3_ENDPOINT || process.env.MINIO_ENDPOINT || 'http://minio:9000';
-let endPoint = 'minio';
-let port = 9000;
-let useSSL = false;
-
-try {
-  if (rawEndpoint.startsWith('http://') || rawEndpoint.startsWith('https://')) {
-    const url = new URL(rawEndpoint);
-    endPoint = url.hostname;
-    port = url.port ? parseInt(url.port, 10) : url.protocol === 'https:' ? 443 : 80;
-    useSSL = url.protocol === 'https:';
-  } else {
-    endPoint = rawEndpoint;
-  }
-} catch {
-  endPoint = rawEndpoint;
+export interface OpenAIClientResult extends OpenAI {
+  client: OpenAI;
+  openai: OpenAI;
+  config: UserLLMConfig & { [key: string]: any };
+  user: any;
+  model: string;
+  maxTokens: number;
+  apiKey: string;
+  baseUrl: string;
 }
 
-// 自动匹配多种环境变量命名，兜底默认值 minioadmin
-const accessKey =
-  process.env.S3_ACCESS_KEY ||
-  process.env.MINIO_ACCESS_KEY ||
-  process.env.MINIO_ROOT_USER ||
-  'minioadmin';
+const MASK_PREFIX = '••••••••';
 
-const secretKey =
-  process.env.S3_SECRET_KEY ||
-  process.env.MINIO_SECRET_KEY ||
-  process.env.MINIO_ROOT_PASSWORD ||
-  'minioadmin';
-
-const minioClient = new Minio.Client({
-  endPoint,
-  port,
-  useSSL,
-  accessKey,
-  secretKey,
-});
-
-const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.MINIO_BUCKET || 'excalidraw-plus';
-
-function getUserConfigKey(username: string): string {
-  return `users/${username}/llm-config.json`;
+// 判断是否为脱敏后的掩码字符串
+export function isMaskedKey(key?: string): boolean {
+  if (!key) return false;
+  return key.startsWith('•••') || key.includes('••••') || key.includes('****');
 }
 
-/**
- * 获取指定用户的大模型配置
- */
-export async function getUserLLMConfig(username: string): Promise<UserLLMConfig | null> {
+// 对 API Key 进行安全掩码处理
+export function maskKey(key?: string): string {
+  if (!key) return '';
+  if (key.length <= 8) return MASK_PREFIX;
+  return `${MASK_PREFIX}${key.slice(-4)}`;
+}
+
+// 获取指定用户的 LLM 配置
+export async function getUserLLMConfig(userId: string = 'default-user'): Promise<UserLLMConfig | null> {
+  const objectName = `users/${userId}/llm-config.json`;
+
   try {
-    const stream = await minioClient.getObject(BUCKET_NAME, getUserConfigKey(username));
+    const stream = await minioClient.getObject(BUCKET_NAME, objectName);
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
-      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+      chunks.push(chunk);
     }
-    const data = Buffer.concat(chunks).toString('utf-8');
-    return JSON.parse(data) as UserLLMConfig;
-  } catch (error: any) {
-    if (
-      error.code === 'NoSuchKey' ||
-      error.code === 'NotFound' ||
-      error.message?.includes('Not Found')
-    ) {
-      return null;
-    }
-    console.error(`[LLM Config] 读取 ${username} 的配置失败:`, error);
+    const dataStr = Buffer.concat(chunks).toString('utf-8');
+    return JSON.parse(dataStr);
+  } catch (err: any) {
     return null;
   }
 }
 
-/**
- * 保存用户的大模型配置
- */
-export async function saveUserLLMConfig(username: string, config: UserLLMConfig): Promise<void> {
-  let baseUrl = config.baseUrl?.trim() || '';
-  if (baseUrl.endsWith('/')) {
-    baseUrl = baseUrl.slice(0, -1);
-  }
+export const getLLMConfig = getUserLLMConfig;
 
-  const payload: UserLLMConfig = {
-    ...config,
-    providerType: 'openai_compatible',
-    baseUrl,
-    models: (config.models || []).map((m) => m.trim()).filter(Boolean),
-    maxTokens: Number(config.maxTokens) || 4096,
-    temperature: Number(config.temperature) ?? 0.7,
-  };
+// 保存指定用户的 LLM 配置到 MinIO
+export async function saveUserLLMConfig(
+  userId: string = 'default-user',
+  config: UserLLMConfig
+): Promise<boolean> {
+  const objectName = `users/${userId}/llm-config.json`;
+  const buffer = Buffer.from(JSON.stringify(config, null, 2), 'utf-8');
 
-  // 自动检测并创建 Bucket
   try {
-    const exists = await minioClient.bucketExists(BUCKET_NAME);
-    if (!exists) {
-      await minioClient.makeBucket(BUCKET_NAME, '');
+    const bucketExists = await minioClient.bucketExists(BUCKET_NAME);
+    if (!bucketExists) {
+      await minioClient.makeBucket(BUCKET_NAME, 'us-east-1');
     }
-  } catch {
-    // 忽略已存在或并发创建错误
-  }
 
-  const buffer = Buffer.from(JSON.stringify(payload, null, 2), 'utf-8');
-  await minioClient.putObject(BUCKET_NAME, getUserConfigKey(username), buffer, buffer.length, {
-    'Content-Type': 'application/json',
-  });
+    await minioClient.putObject(
+      BUCKET_NAME,
+      objectName,
+      buffer,
+      buffer.length,
+      { 'Content-Type': 'application/json' }
+    );
+    return true;
+  } catch (err) {
+    console.error('保存用户大模型配置到 MinIO 失败:', err);
+    return false;
+  }
 }
 
-/**
- * 获取当前登录用户对应的 OpenAI 客户端与配置
- */
-export async function getOpenAIClientForRequest(): Promise<{
-  client: OpenAI;
-  config: UserLLMConfig;
-  username: string;
-}> {
-  const user = await getCurrentUser();
-  if (!user || !user.username) {
-    throw new Error('UNAUTHORIZED');
+// 为请求构造 OpenAI 客户端实例与配置参数
+export async function getOpenAIClientForRequest(
+  req?: NextRequest | Request,
+  bodyConfig?: Partial<UserLLMConfig>
+): Promise<OpenAIClientResult> {
+  let currentUser: any = { id: 'default-user', username: 'admin', role: 'superadmin' };
+  if (req) {
+    try {
+      const user = await getAuthUser(req as any);
+      if (user?.id) currentUser = user;
+    } catch {}
   }
 
-  const config = await getUserLLMConfig(user.username);
-  if (!config || !config.apiKey || !config.baseUrl) {
-    throw new Error('NO_LLM_CONFIG');
+  const userId = currentUser.id || 'default-user';
+  const savedConfig = await getUserLLMConfig(userId);
+
+  let apiKey = bodyConfig?.apiKey?.trim() || '';
+  if (!apiKey || isMaskedKey(apiKey)) {
+    apiKey = savedConfig?.apiKey || process.env.OPENAI_API_KEY || process.env.AI_API_KEY || '';
   }
+
+  const baseUrl = (
+    bodyConfig?.baseUrl ||
+    savedConfig?.baseUrl ||
+    process.env.OPENAI_BASE_URL ||
+    'https://api.openai.com/v1'
+  ).replace(/\/+$/, '');
+
+  const model =
+    bodyConfig?.defaultModel ||
+    (bodyConfig as any)?.model ||
+    savedConfig?.defaultModel ||
+    'qwen3.7-plus';
+
+  const maxTokens =
+    Number(bodyConfig?.maxTokens) ||
+    Number(savedConfig?.maxTokens) ||
+    4096;
 
   const client = new OpenAI({
-    baseURL: config.baseUrl,
-    apiKey: config.apiKey,
+    apiKey: apiKey || 'dummy-key',
+    baseURL: baseUrl,
   });
 
-  return {
-    client,
-    config,
-    username: user.username,
+  const configObj: UserLLMConfig & { [key: string]: any } = {
+    protocol: bodyConfig?.protocol || savedConfig?.protocol || 'openai_compatible (OpenAI 兼容协议)',
+    baseUrl,
+    apiKey,
+    models: bodyConfig?.models || savedConfig?.models || 'deepseek-v4-pro,deepseek-v4-flash,qwen3.7-plus,glm-5.2',
+    defaultModel: model,
+    maxTokens,
   };
+
+  return Object.assign(client, {
+    client,
+    openai: client,
+    config: configObj,
+    user: currentUser,
+    model,
+    maxTokens,
+    apiKey,
+    baseUrl,
+  }) as OpenAIClientResult;
+}
+
+// 测试接口连通性
+export async function testLLMConnection(
+  config: UserLLMConfig
+): Promise<{ success: boolean; error?: string }> {
+  const cleanBaseUrl = (config.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const model =
+    config.defaultModel ||
+    (config.models ? config.models.split(/[,，\n]/)[0].trim() : 'qwen3.7-plus');
+
+  try {
+    const response = await fetch(`${cleanBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 5,
+      }),
+    });
+
+    if (response.ok) {
+      return { success: true };
+    }
+
+    if (response.status === 404 || response.status === 400) {
+      const modelsRes = await fetch(`${cleanBaseUrl}/models`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+      });
+
+      if (modelsRes.ok) {
+        return { success: true };
+      }
+    }
+
+    const errText = await response.text();
+    let errorDetail = `HTTP ${response.status}`;
+    try {
+      const errJson = JSON.parse(errText);
+      errorDetail = errJson.error?.message || errJson.message || errorDetail;
+    } catch {
+      if (errText) errorDetail = errText.slice(0, 100);
+    }
+
+    return {
+      success: false,
+      error: `接口连接失败 (${errorDetail})`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `网络连接异常: ${err.message || '无法访问该 Base URL'}`,
+    };
+  }
 }

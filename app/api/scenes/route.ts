@@ -1,106 +1,116 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { minioClient, BUCKET_NAME, ensureBucketExists } from '@/lib/minio';
+import { minioClient, BUCKET_NAME } from '@/lib/minio';
+import { getAuthUser } from '@/lib/auth';
 
-export const runtime = 'nodejs';
+// GET: 获取画板场景数据
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const boardId =
+      searchParams.get('id') ||
+      searchParams.get('boardId') ||
+      'default-board';
 
+    const objectName = `scenes/${boardId}.json`;
+
+    try {
+      const stream = await minioClient.getObject(BUCKET_NAME, objectName);
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      const dataStr = Buffer.concat(chunks).toString('utf-8');
+      const scene = JSON.parse(dataStr);
+      return NextResponse.json(scene);
+    } catch (err: any) {
+      // 若 MinIO 中尚未创建该画板，正常返回空画板结构，不抛出 400
+      return NextResponse.json({
+        id: boardId,
+        boardId,
+        title: '12号',
+        elements: [],
+        appState: {},
+        files: {},
+      });
+    }
+  } catch (error: any) {
+    console.error('获取画板场景异常:', error);
+    return NextResponse.json({
+      id: 'default-board',
+      boardId: 'default-board',
+      title: '12号',
+      elements: [],
+      appState: {},
+      files: {},
+    });
+  }
+}
+
+// POST: 保存/持久化画板场景到 MinIO
 export async function POST(req: NextRequest) {
   try {
+    const user = await getAuthUser(req);
     const body = await req.json();
-    const { boardId, sceneData } = body;
 
-    if (!boardId) {
-      return NextResponse.json({ error: '缺少 boardId 参数' }, { status: 400 });
-    }
-    if (!sceneData || !Array.isArray(sceneData.elements)) {
-      return NextResponse.json({ error: '缺少有效的 sceneData.elements 画布数据' }, { status: 400 });
-    }
+    const boardId = body.id || body.boardId || 'default-board';
+    const title = body.title || '12号';
+    const projectId = body.projectId || 'default-project';
 
-    await ensureBucketExists();
-
-    const objectKey = `scenes/${boardId}.json`;
-    const jsonStr = JSON.stringify(sceneData);
-    const buffer = Buffer.from(jsonStr, 'utf-8');
-
-    await minioClient.putObject(BUCKET_NAME, objectKey, buffer, buffer.length, {
-      'Content-Type': 'application/json; charset=utf-8',
-    });
-
-    console.log(`[MinIO] 草图成功持久化: ${objectKey}, 图元数量: ${sceneData.elements.length}`);
-
-    return NextResponse.json({
-      success: true,
-      message: '保存成功',
-      objectKey,
-      elementCount: sceneData.elements.length,
+    const sceneData = {
+      id: boardId,
+      boardId,
+      projectId,
+      title,
+      elements: body.elements || [],
+      appState: body.appState || {},
+      files: body.files || {},
       updatedAt: new Date().toISOString(),
-    });
+      updatedBy: user?.username || 'admin',
+    };
+
+    const objectName = `scenes/${boardId}.json`;
+    const buffer = Buffer.from(JSON.stringify(sceneData, null, 2), 'utf-8');
+
+    const bucketExists = await minioClient.bucketExists(BUCKET_NAME);
+    if (!bucketExists) {
+      await minioClient.makeBucket(BUCKET_NAME, 'us-east-1');
+    }
+
+    await minioClient.putObject(
+      BUCKET_NAME,
+      objectName,
+      buffer,
+      buffer.length,
+      { 'Content-Type': 'application/json' }
+    );
+
+    return NextResponse.json({ success: true, ...sceneData });
   } catch (error: any) {
-    console.error('[API /api/scenes POST] Fatal Error:', error);
+    console.error('保存画板场景失败:', error);
     return NextResponse.json(
-      { error: error.message || 'MinIO 数据写入失败' },
+      { error: error.message || '保存画板场景失败' },
       { status: 500 }
     );
   }
 }
 
-export async function GET(req: NextRequest) {
+// DELETE: 删除画板场景
+export async function DELETE(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
-    const boardId = searchParams.get('boardId');
+    const boardId = searchParams.get('id') || searchParams.get('boardId');
 
     if (!boardId) {
-      return NextResponse.json({ error: '缺少 boardId 参数' }, { status: 400 });
+      return NextResponse.json({ error: '缺少画板 ID' }, { status: 400 });
     }
 
-    await ensureBucketExists();
-    const objectKey = `scenes/${boardId}.json`;
+    const objectName = `scenes/${boardId}.json`;
+    try {
+      await minioClient.removeObject(BUCKET_NAME, objectName);
+    } catch (e) {}
 
-    return new Promise<NextResponse>(async (resolve) => {
-      try {
-        const stream = await minioClient.getObject(BUCKET_NAME, objectKey);
-        const chunks: Buffer[] = [];
-
-        stream.on('data', (chunk) => {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        });
-
-        stream.on('end', () => {
-          try {
-            const raw = Buffer.concat(chunks).toString('utf-8');
-            if (!raw.trim()) {
-              resolve(NextResponse.json({ success: true, sceneData: null }));
-              return;
-            }
-            const sceneData = JSON.parse(raw);
-            resolve(NextResponse.json({ success: true, sceneData }));
-          } catch (parseErr: any) {
-            console.error(`[MinIO] JSON 解析失败 (${objectKey}):`, parseErr);
-            resolve(NextResponse.json({ success: true, sceneData: null }));
-          }
-        });
-
-        stream.on('error', (err: any) => {
-          if (err.code === 'NoSuchKey' || err.code === 'NotFound') {
-            resolve(NextResponse.json({ success: true, sceneData: null }));
-          } else {
-            console.error(`[MinIO] 读取 Stream 异常 (${objectKey}):`, err);
-            resolve(NextResponse.json({ error: err.message }, { status: 500 }));
-          }
-        });
-      } catch (err: any) {
-        if (err.code === 'NoSuchKey' || err.code === 'NotFound') {
-          resolve(NextResponse.json({ success: true, sceneData: null }));
-        } else {
-          console.error(`[MinIO] 获取对象异常 (${objectKey}):`, err);
-          resolve(NextResponse.json({ error: err.message }, { status: 500 }));
-        }
-      }
-    });
+    return NextResponse.json({ success: true });
   } catch (error: any) {
-    console.error('[API /api/scenes GET] Fatal Error:', error);
-    return NextResponse.json(
-      { error: error.message || '获取画板失败' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: error.message || '删除画板失败' }, { status: 500 });
   }
 }

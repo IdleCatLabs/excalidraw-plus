@@ -1,331 +1,250 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
-import {
-  Sparkles,
-  Code2,
-  Cloud,
-  Share2,
-  Users,
-  ShieldCheck,
-  Loader2,
-  PanelLeft,
-  FolderOpen,
-  Plus,
-  Trash2,
-  FileText,
-  ChevronRight,
-  Folder,
-  X,
-  Edit2,
-  Check,
-} from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import ExcalidrawWrapper from '@/components/ExcalidrawWrapper';
-import { AiSidebar } from '@/components/AiSidebar';
-import { CodeGenerationModal } from '@/components/CodeGenerationModal';
-import { MemberManagementModal } from '@/components/MemberManagementModal';
+import ProjectDrawer, { BoardItem, ProjectItem } from '@/components/ProjectDrawer';
+import AiSidebar from '@/components/AiSidebar';
+import ModelConfigModal, { LOCAL_STORAGE_LLM_KEY, LLMConfig } from '@/components/ModelConfigModal';
+import CodePreviewModal from '@/components/CodePreviewModal';
+import MemberManagementModal from '@/components/MemberManagementModal';
+import UserManagementModal from '@/components/UserManagementModal';
+import {
+  Folder,
+  Code2,
+  Settings,
+  Save,
+  PanelLeft,
+  Sparkles,
+  Users,
+  UserCheck,
+  Share2,
+  Loader2,
+  ChevronDown,
+  Copy,
+  Check,
+  X,
+  LogOut,
+  Shield,
+} from 'lucide-react';
 
-interface BoardItem {
+export interface UserProfile {
   id: string;
-  title: string;
-  folder: string;
-  updatedAt: string;
+  username: string;
+  role: 'superadmin' | 'admin' | 'editor' | 'viewer';
+  avatar?: string;
 }
 
-export default function WhiteboardPage() {
-  const excalidrawRef = useRef<any>(null);
+function MainContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
-  const [folders, setFolders] = useState<string[]>(['默认项目']);
-  const [selectedFolder, setSelectedFolder] = useState<string>('默认项目');
-  const [boards, setBoards] = useState<BoardItem[]>([
-    { id: 'board-01', title: '新建草图', folder: '默认项目', updatedAt: '刚刚' },
-  ]);
+  // 1. 用户与鉴权状态
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState<boolean>(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
-  const [currentBoardId, setCurrentBoardId] = useState<string>('board-01');
-  const [boardTitle, setBoardTitle] = useState<string>('新建草图');
+  // 2. 项目与画板管理状态
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [currentProjectId, setCurrentProjectId] = useState<string>('default-project');
+  const [currentProjectName, setCurrentProjectName] = useState<string>('默认项目');
+  const [currentBoardId, setCurrentBoardId] = useState<string>('default-board');
+  const [currentBoardTitle, setCurrentBoardTitle] = useState<string>('12号');
+  const [sceneData, setSceneData] = useState<any>(null);
+  const [loadingScene, setLoadingScene] = useState<boolean>(false);
 
-  // UI 状态
-  const [isProjectDrawerOpen, setIsProjectDrawerOpen] = useState<boolean>(false);
+  // 3. Excalidraw 实例与画板元素选择状态
+  const [excalidrawAPI, setExcalidrawAPI] = useState<any>(null);
+  const [selectedElements, setSelectedElements] = useState<any[]>([]);
   const [isSaving, setIsSaving] = useState<boolean>(false);
-  const [isAiOpen, setIsAiOpen] = useState<boolean>(true);
-  const [isCodeModalOpen, setIsCodeModalOpen] = useState<boolean>(false);
-  const [isMemberModalOpen, setIsMemberModalOpen] = useState<boolean>(false);
+  const [showSaveToast, setShowSaveToast] = useState<boolean>(false);
+  const selectedIdsKeyRef = useRef<string>('');
 
-  const [editingFolder, setEditingFolder] = useState<string | null>(null);
-  const [editFolderInput, setEditFolderInput] = useState<string>('');
-  const [isAddingFolder, setIsAddingFolder] = useState<boolean>(false);
-  const [newFolderName, setNewFolderName] = useState<string>('');
+  // 4. 大模型配置状态
+  const [llmConfig, setLlmConfig] = useState<LLMConfig>({
+    protocol: 'openai_compatible (OpenAI 兼容协议)',
+    baseUrl: 'https://khub.idlecatlabs.net/v1',
+    apiKey: '',
+    models: 'deepseek-v4-pro,deepseek-v4-flash,qwen3.7-plus,glm-5.2',
+    defaultModel: 'qwen3.7-plus',
+    maxTokens: 4096,
+  });
 
-  const [editingBoardId, setEditingBoardId] = useState<string | null>(null);
-  const [editBoardTitleInput, setEditBoardTitleInput] = useState<string>('');
+  // 5. 模态框展开状态
+  const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
+  const [isAiSidebarOpen, setIsAiSidebarOpen] = useState<boolean>(false);
+  const [isModelConfigOpen, setIsModelConfigOpen] = useState<boolean>(false);
+  const [isCodeGenOpen, setIsCodeGenOpen] = useState<boolean>(false);
+  const [isMemberManageOpen, setIsMemberManageOpen] = useState<boolean>(false);
+  const [isUserManageOpen, setIsUserManageOpen] = useState<boolean>(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
 
-  // 1. 页面加载时从 MinIO 获取持久化工作区元数据
+  // 分享链接状态
+  const [shareUrl, setShareUrl] = useState<string>('');
+  const [copiedShare, setCopiedShare] = useState<boolean>(false);
+
+  const initializedRef = useRef<boolean>(false);
+
+  // 点击外部收起用户菜单
   useEffect(() => {
-    async function initWorkspace() {
-      try {
-        const res = await fetch('/api/workspace');
-        const json = await res.json();
-        if (json.success && json.data) {
-          if (Array.isArray(json.data.folders) && json.data.folders.length > 0) {
-            setFolders(json.data.folders);
-            setSelectedFolder(json.data.folders[0]);
-          }
-          if (Array.isArray(json.data.boards) && json.data.boards.length > 0) {
-            setBoards(json.data.boards);
-            setCurrentBoardId(json.data.boards[0].id);
-            setBoardTitle(json.data.boards[0].title);
-          }
-        }
-      } catch (e) {
-        console.warn('从 MinIO 加载工作区元数据失败:', e);
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setIsUserMenuOpen(false);
       }
-    }
-    initWorkspace();
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // 同步工作区元数据到 MinIO
-  const syncWorkspaceToMinio = async (updatedFolders: string[], updatedBoards: BoardItem[]) => {
-    try {
-      await fetch('/api/workspace', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folders: updatedFolders, boards: updatedBoards }),
-      });
-    } catch (e) {
-      console.error('同步工作区到 MinIO 失败:', e);
-    }
-  };
-
-  // 渲染画板
-  const renderElementsToCanvas = (elements: any[], appState?: any, files?: any) => {
-    const api =
-      excalidrawRef.current?.excalidrawAPI ||
-      excalidrawRef.current ||
-      (typeof window !== 'undefined' ? (window as any).__EXCALIDRAW_API__ : null);
-
-    if (!api || typeof api.updateScene !== 'function') return;
-
-    api.updateScene({
-      elements: JSON.parse(JSON.stringify(elements)),
-      appState: {
-        viewBackgroundColor: '#f5f5f7',
-        ...appState,
-      },
-      files: files || {},
-      commitToHistory: false,
-    });
-
-    if (elements.length > 0) {
-      setTimeout(() => {
-        api.scrollToContent?.(elements, { fitToViewport: true });
-      }, 100);
-    }
-  };
-
-  // 2. 切换草图时精确从 MinIO 加载
+  // 加载本地已存的大模型 Key
   useEffect(() => {
-    let isCancelled = false;
+    try {
+      const stored = localStorage.getItem(LOCAL_STORAGE_LLM_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setLlmConfig((prev) => ({ ...prev, ...parsed }));
+      }
+    } catch (e) {
+      console.error('读取本地配置失败:', e);
+    }
+  }, []);
 
-    async function loadScene() {
-      try {
-        const res = await fetch(`/api/scenes?boardId=${currentBoardId}`);
+  // 鉴权检查
+  useEffect(() => {
+    fetch('/api/auth')
+      .then((res) => {
+        if (!res.ok) {
+          router.push('/login');
+          return null;
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (data?.user) {
+          setCurrentUser(data.user);
+        } else {
+          setCurrentUser({
+            id: 'admin-1',
+            username: 'Admin',
+            role: 'superadmin',
+          });
+        }
+      })
+      .catch(() => {
+        setCurrentUser({
+          id: 'admin-1',
+          username: 'Admin',
+          role: 'superadmin',
+        });
+      })
+      .finally(() => {
+        setAuthLoading(false);
+      });
+  }, [router]);
+
+  // 退出登录
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth', { method: 'DELETE' });
+    } catch (e) {
+      console.error('退出登录异常:', e);
+    } finally {
+      localStorage.removeItem('current_board_id');
+      localStorage.removeItem('current_project_id');
+      router.push('/login');
+    }
+  };
+
+  // 从云端加载画板内容
+  const loadScene = useCallback(async (boardId: string) => {
+    setLoadingScene(true);
+    try {
+      const res = await fetch(`/api/scenes?id=${encodeURIComponent(boardId)}&boardId=${encodeURIComponent(boardId)}`);
+      if (res.ok) {
         const data = await res.json();
-
-        if (isCancelled) return;
-
-        if (
-          data.success &&
-          data.sceneData &&
-          Array.isArray(data.sceneData.elements) &&
-          data.sceneData.elements.length > 0
-        ) {
-          renderElementsToCanvas(data.sceneData.elements, data.sceneData.appState, data.sceneData.files);
-        } else {
-          const api =
-            excalidrawRef.current?.excalidrawAPI ||
-            excalidrawRef.current ||
-            (typeof window !== 'undefined' ? (window as any).__EXCALIDRAW_API__ : null);
-          if (api && typeof api.resetScene === 'function') {
-            api.resetScene();
-          }
-        }
-      } catch (e) {
-        console.warn('从 MinIO 载入草图失败:', e);
-      }
-    }
-
-    loadScene();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [currentBoardId]);
-
-  // 3. 项目分组管理
-  const handleAddFolder = () => {
-    const trimmed = newFolderName.trim();
-    if (!trimmed || folders.includes(trimmed)) return;
-    const nextFolders = [...folders, trimmed];
-    setFolders(nextFolders);
-    setSelectedFolder(trimmed);
-    setNewFolderName('');
-    setIsAddingFolder(false);
-    syncWorkspaceToMinio(nextFolders, boards);
-  };
-
-  const handleStartRenameFolder = (e: React.MouseEvent, folder: string) => {
-    e.stopPropagation();
-    setEditingFolder(folder);
-    setEditFolderInput(folder);
-  };
-
-  const handleSaveRenameFolder = (oldFolder: string) => {
-    const trimmed = editFolderInput.trim();
-    if (!trimmed || trimmed === oldFolder) {
-      setEditingFolder(null);
-      return;
-    }
-    const nextFolders = folders.map((f) => (f === oldFolder ? trimmed : f));
-    const nextBoards = boards.map((b) => (b.folder === oldFolder ? { ...b, folder: trimmed } : b));
-    setFolders(nextFolders);
-    setBoards(nextBoards);
-    if (selectedFolder === oldFolder) setSelectedFolder(trimmed);
-    setEditingFolder(null);
-    syncWorkspaceToMinio(nextFolders, nextBoards);
-  };
-
-  const handleDeleteFolder = (e: React.MouseEvent, folderToDelete: string) => {
-    e.stopPropagation();
-    if (folders.length <= 1) {
-      alert('请至少保留一个项目分组');
-      return;
-    }
-    if (confirm(`确定删除分组「${folderToDelete}」吗？名下草图将自动归入「默认项目」`)) {
-      const fallback = folders.find((f) => f !== folderToDelete) || '默认项目';
-      const nextFolders = folders.filter((f) => f !== folderToDelete);
-      const nextBoards = boards.map((b) =>
-        b.folder === folderToDelete ? { ...b, folder: fallback } : b
-      );
-      setFolders(nextFolders);
-      setBoards(nextBoards);
-      if (selectedFolder === folderToDelete) setSelectedFolder(fallback);
-      syncWorkspaceToMinio(nextFolders, nextBoards);
-    }
-  };
-
-  // 4. 草图文件管理
-  const handleCreateNewBoard = () => {
-    const newId = `board-${Date.now().toString().slice(-6)}`;
-    const newBoard: BoardItem = {
-      id: newId,
-      title: `新建草图-${boards.length + 1}`,
-      folder: selectedFolder,
-      updatedAt: '刚刚',
-    };
-    const nextBoards = [newBoard, ...boards];
-    setBoards(nextBoards);
-    setCurrentBoardId(newId);
-    setBoardTitle(newBoard.title);
-
-    const api =
-      excalidrawRef.current?.excalidrawAPI ||
-      excalidrawRef.current ||
-      (typeof window !== 'undefined' ? (window as any).__EXCALIDRAW_API__ : null);
-    if (api && typeof api.resetScene === 'function') {
-      api.resetScene();
-    }
-    setIsProjectDrawerOpen(false);
-    syncWorkspaceToMinio(folders, nextBoards);
-  };
-
-  const handleSwitchBoard = (board: BoardItem) => {
-    if (board.id === currentBoardId) {
-      setIsProjectDrawerOpen(false);
-      return;
-    }
-    setCurrentBoardId(board.id);
-    setBoardTitle(board.title);
-    setSelectedFolder(board.folder);
-    setIsProjectDrawerOpen(false);
-  };
-
-  const handleStartRenameBoard = (e: React.MouseEvent, b: BoardItem) => {
-    e.stopPropagation();
-    setEditingBoardId(b.id);
-    setEditBoardTitleInput(b.title);
-  };
-
-  const handleSaveRenameBoard = (boardId: string) => {
-    const trimmed = editBoardTitleInput.trim();
-    if (trimmed) {
-      const nextBoards = boards.map((b) => (b.id === boardId ? { ...b, title: trimmed } : b));
-      setBoards(nextBoards);
-      if (currentBoardId === boardId) {
-        setBoardTitle(trimmed);
-      }
-      syncWorkspaceToMinio(folders, nextBoards);
-    }
-    setEditingBoardId(null);
-  };
-
-  const handleDeleteBoard = (e: React.MouseEvent, boardToDelete: BoardItem) => {
-    e.stopPropagation();
-    if (confirm(`确定删除草图「${boardToDelete.title}」吗？`)) {
-      const nextBoards = boards.filter((b) => b.id !== boardToDelete.id);
-      setBoards(nextBoards);
-
-      if (currentBoardId === boardToDelete.id) {
-        if (nextBoards.length > 0) {
-          const next = nextBoards[0];
-          setCurrentBoardId(next.id);
-          setBoardTitle(next.title);
-          setSelectedFolder(next.folder);
-        } else {
-          handleCreateNewBoard();
-          return;
+        setSceneData({
+          id: boardId,
+          title: data.title || '12号',
+          elements: data.elements || [],
+          appState: data.appState || {},
+          files: data.files || {},
+        });
+        if (data.title) {
+          setCurrentBoardTitle(data.title);
         }
       }
-      syncWorkspaceToMinio(folders, nextBoards);
+    } catch (err) {
+      console.error('加载画板失败:', err);
+    } finally {
+      setLoadingScene(false);
     }
-  };
+  }, []);
 
-  // 5. 保存画板到 MinIO
-  const handleSaveToCloud = async () => {
-    if (isSaving) return;
-
-    const api =
-      excalidrawRef.current?.excalidrawAPI ||
-      excalidrawRef.current ||
-      (typeof window !== 'undefined' ? (window as any).__EXCALIDRAW_API__ : null);
-
-    if (!api) {
-      alert('画板尚未初始化完成');
-      return;
+  // 刷新项目列表
+  const fetchProjects = useCallback(async () => {
+    try {
+      const res = await fetch('/api/projects');
+      if (res.ok) {
+        const data = await res.json();
+        const projectList: ProjectItem[] = data.projects || [];
+        setProjects(projectList);
+        return projectList;
+      }
+    } catch (err) {
+      console.error('拉取项目列表失败:', err);
     }
+    return [];
+  }, []);
+
+  // 页面初次初始化
+  useEffect(() => {
+    if (authLoading || initializedRef.current) return;
+    initializedRef.current = true;
+
+    fetchProjects().then((projectList) => {
+      const urlBoardId = searchParams.get('id') || localStorage.getItem('current_board_id') || 'default-board';
+      const urlProjectId = searchParams.get('projectId') || localStorage.getItem('current_project_id');
+
+      let targetProj = projectList.find((p) => p.id === urlProjectId) || projectList[0];
+      let targetBoard: BoardItem | undefined;
+
+      if (targetProj) {
+        setCurrentProjectId(targetProj.id);
+        setCurrentProjectName(targetProj.name);
+        targetBoard = targetProj.boards?.find((b) => b.id === urlBoardId) || targetProj.boards?.[0];
+      }
+
+      if (targetBoard) {
+        setCurrentBoardId(targetBoard.id);
+        setCurrentBoardTitle(targetBoard.title || '12号');
+        loadScene(targetBoard.id);
+      } else {
+        setCurrentBoardId(urlBoardId);
+        loadScene(urlBoardId);
+      }
+    });
+  }, [authLoading, fetchProjects, loadScene, searchParams]);
+
+  // 保存画板到云端
+  const handleSaveScene = async () => {
+    if (!excalidrawAPI || isSaving) return;
 
     setIsSaving(true);
     try {
-      const rawElements =
-        typeof api.getSceneElements === 'function'
-          ? api.getSceneElements()
-          : api.getSceneData?.()?.elements || [];
+      const elements = excalidrawAPI.getSceneElements();
+      const appState = excalidrawAPI.getAppState();
+      const files = excalidrawAPI.getFiles();
 
-      const elements = rawElements.filter((el: any) => !el.isDeleted);
-
-      const appState =
-        typeof api.getAppState === 'function'
-          ? api.getAppState()
-          : api.getSceneData?.()?.appState || {};
-
-      const files =
-        typeof api.getFiles === 'function'
-          ? api.getFiles()
-          : api.getSceneData?.()?.files || {};
-
-      const sceneData = {
+      const payload = {
+        id: currentBoardId,
+        boardId: currentBoardId,
+        projectId: currentProjectId,
+        title: currentBoardTitle,
         elements,
         appState: {
-          viewBackgroundColor: appState.viewBackgroundColor || '#f5f5f7',
+          viewBackgroundColor: appState.viewBackgroundColor,
+          gridSize: appState.gridSize,
         },
         files,
       };
@@ -333,393 +252,455 @@ export default function WhiteboardPage() {
       const res = await fetch('/api/scenes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          boardId: currentBoardId || 'default-board',
-          sceneData,
-        }),
+        body: JSON.stringify(payload),
       });
 
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(data.error || `HTTP ${res.status} ${res.statusText}`);
+      if (res.ok) {
+        localStorage.setItem('current_board_id', currentBoardId);
+        localStorage.setItem('current_project_id', currentProjectId);
+        localStorage.setItem('current_board_title', currentBoardTitle);
+        setShowSaveToast(true);
+      } else {
+        const errData = await res.json();
+        alert('保存画板失败: ' + (errData.error || '未知错误'));
       }
-
-      const nextBoards = boards.map((b) =>
-        b.id === currentBoardId ? { ...b, title: boardTitle, updatedAt: '刚刚' } : b
-      );
-      setBoards(nextBoards);
-      syncWorkspaceToMinio(folders, nextBoards);
-
-      alert('画板已成功持久化至云端！');
     } catch (err: any) {
-      console.error('Save to Cloud Error:', err);
-      alert(`保存失败: ${err.message || '网络连接异常'}`);
+      console.error('保存画板异常:', err);
+      alert('保存异常: ' + (err.message || '网络连接失败'));
     } finally {
       setIsSaving(false);
     }
   };
 
+  // 切换画板
+  const handleSelectBoard = (boardId: string, title?: string, projectName?: string) => {
+    setCurrentBoardId(boardId);
+    if (title) {
+      setCurrentBoardTitle(title);
+      localStorage.setItem('current_board_title', title);
+    }
+    if (projectName) {
+      setCurrentProjectName(projectName);
+    }
+
+    localStorage.setItem('current_board_id', boardId);
+    loadScene(boardId);
+    setIsDrawerOpen(false);
+  };
+
+  // 核心防死循环：对比选中元素 ID，非必要不触发 setState
+  const handleElementsChange = useCallback((elements: readonly any[], appState: any) => {
+    const selectedObj = appState?.selectedElementIds || {};
+    const keys = Object.keys(selectedObj).filter((k) => selectedObj[k]).sort().join(',');
+
+    if (keys !== selectedIdsKeyRef.current) {
+      selectedIdsKeyRef.current = keys;
+      if (!keys) {
+        setSelectedElements([]);
+      } else {
+        const selected = elements.filter((el) => selectedObj[el.id]);
+        setSelectedElements(selected);
+      }
+    }
+  }, []);
+
+  const handleApiReady = useCallback((api: any) => {
+    setExcalidrawAPI(api);
+  }, []);
+
+  const handleOpenCodeGen = () => {
+    if (!excalidrawAPI) return;
+    const elements = excalidrawAPI.getSceneElements();
+    const appState = excalidrawAPI.getAppState();
+    const selected = elements.filter(
+      (el: any) => appState.selectedElementIds && appState.selectedElementIds[el.id]
+    );
+    setSelectedElements(selected.length > 0 ? selected : elements);
+    setIsCodeGenOpen(true);
+  };
+
+  const handleOpenShare = () => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    setShareUrl(`${origin}/share/${currentBoardId}`);
+    setIsShareModalOpen(true);
+  };
+
+  const handleCopyShareUrl = () => {
+    navigator.clipboard.writeText(shareUrl);
+    setCopiedShare(true);
+    setTimeout(() => setCopiedShare(false), 2000);
+  };
+
+  const handleModelConfigSaved = (newConfig: LLMConfig) => {
+    setLlmConfig(newConfig);
+    localStorage.setItem(LOCAL_STORAGE_LLM_KEY, JSON.stringify(newConfig));
+  };
+
+  if (authLoading) {
+    return (
+      <div className="w-screen h-screen flex flex-col items-center justify-center bg-gray-50 text-gray-600 gap-3">
+        <Loader2 className="w-9 h-9 animate-spin text-indigo-600" />
+        <p className="text-sm font-medium">正在载入工作空间...</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#f5f5f7] dark:bg-zinc-950 font-sans relative">
-      {/* 抽屉遮罩 */}
-      {isProjectDrawerOpen && (
-        <div
-          className="fixed inset-0 bg-black/40 backdrop-blur-[2px] z-40 transition-opacity"
-          onClick={() => setIsProjectDrawerOpen(false)}
-        />
-      )}
-
-      {/* 项目分组抽屉 */}
-      <aside
-        className={`fixed top-0 bottom-0 left-0 w-80 bg-white dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-800 z-50 flex flex-col shadow-2xl transition-transform duration-200 ease-in-out ${
-          isProjectDrawerOpen ? 'translate-x-0' : '-translate-x-full'
-        }`}
-      >
-        <div className="h-12 px-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2 text-zinc-900 dark:text-zinc-100 font-semibold text-sm">
-            <FolderOpen className="w-4 h-4 text-indigo-500" />
-            <span>项目与草图管理</span>
-          </div>
+    <div className="w-screen h-screen flex flex-col overflow-hidden bg-[#fafafa] select-none">
+      {/* 顶部全局导航栏 */}
+      <header className="h-14 bg-white border-b border-gray-200 px-4 flex items-center justify-between z-20 shrink-0 shadow-xs">
+        <div className="flex items-center gap-3">
           <button
-            onClick={() => setIsProjectDrawerOpen(false)}
-            className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 rounded"
+            type="button"
+            onClick={() => setIsDrawerOpen(true)}
+            className="p-2 hover:bg-gray-100 active:bg-gray-200 rounded-xl text-gray-700 transition"
+            title="打开项目抽屉"
           >
-            <X className="w-4 h-4" />
+            <PanelLeft className="w-5 h-5" />
           </button>
-        </div>
 
-        {/* 分组操作栏 */}
-        <div className="p-3 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50">
-          <div className="flex items-center justify-between text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-2">
-            <span>项目分组</span>
-            <button
-              onClick={() => setIsAddingFolder(true)}
-              className="text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-0.5 text-xs font-medium"
-            >
-              <Plus className="w-3 h-3" /> 新建分组
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setIsDrawerOpen(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 transition shadow-2xs"
+          >
+            <Folder className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+            <span className="truncate max-w-[130px]">{currentProjectName}</span>
+            <ChevronDown className="w-3 h-3 text-gray-400" />
+          </button>
 
-          {isAddingFolder && (
-            <div className="flex items-center gap-1 mb-2">
-              <input
-                type="text"
-                autoFocus
-                placeholder="输入分组名称..."
-                value={newFolderName}
-                onChange={(e) => setNewFolderName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleAddFolder()}
-                className="flex-1 px-2 py-1 text-xs border border-indigo-300 rounded focus:outline-none dark:bg-zinc-800 dark:border-zinc-700"
-              />
-              <button
-                onClick={handleAddFolder}
-                className="p-1 bg-indigo-600 text-white rounded text-xs"
-              >
-                <Check className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => setIsAddingFolder(false)}
-                className="p-1 text-zinc-400 hover:text-zinc-600 rounded"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
+          <div className="h-4 w-[1px] bg-gray-200 mx-0.5" />
+
+          <input
+            type="text"
+            value={currentBoardTitle}
+            onChange={(e) => setCurrentBoardTitle(e.target.value)}
+            placeholder="未命名画板"
+            className="font-bold text-gray-800 text-sm px-2.5 py-1.5 rounded-lg border border-transparent hover:border-gray-300 focus:border-indigo-500 focus:bg-white outline-none transition max-w-[200px]"
+          />
+
+          {loadingScene && (
+            <div className="flex items-center gap-1.5 text-xs text-indigo-600 ml-1">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span className="text-[11px] font-medium">同步画板中...</span>
             </div>
           )}
-
-          <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
-            {folders.map((folder) => {
-              const isSelected = selectedFolder === folder;
-              const isEditing = editingFolder === folder;
-
-              return (
-                <div
-                  key={folder}
-                  onClick={() => !isEditing && setSelectedFolder(folder)}
-                  className={`group flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
-                    isSelected
-                      ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-300'
-                      : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                  }`}
-                >
-                  {isEditing ? (
-                    <div className="flex items-center gap-1 w-full" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="text"
-                        autoFocus
-                        value={editFolderInput}
-                        onChange={(e) => setEditFolderInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSaveRenameFolder(folder)}
-                        className="flex-1 px-1.5 py-0.5 text-xs border border-indigo-400 rounded dark:bg-zinc-800"
-                      />
-                      <button
-                        onClick={() => handleSaveRenameFolder(folder)}
-                        className="p-1 text-emerald-600 hover:bg-emerald-50 rounded"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="flex items-center gap-2 truncate flex-1">
-                        <Folder className="w-3.5 h-3.5 shrink-0" />
-                        <span className="truncate">{folder}</span>
-                      </div>
-
-                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition">
-                        <button
-                          onClick={(e) => handleStartRenameFolder(e, folder)}
-                          title="重命名分组"
-                          className="p-1 text-zinc-400 hover:text-indigo-600 rounded"
-                        >
-                          <Edit2 className="w-3 h-3" />
-                        </button>
-                        <button
-                          onClick={(e) => handleDeleteFolder(e, folder)}
-                          title="删除分组"
-                          className="p-1 text-zinc-400 hover:text-rose-500 rounded"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                        <ChevronRight className="w-3 h-3 opacity-40 ml-0.5" />
-                      </div>
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
         </div>
 
-        {/* 草图文件列表 */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-1">
-          <div className="flex items-center justify-between text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-2 px-1">
-            <span>「{selectedFolder}」草图</span>
-            <button
-              onClick={handleCreateNewBoard}
-              className="text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-0.5 text-xs font-medium"
-            >
-              <Plus className="w-3 h-3" /> 新建
-            </button>
-          </div>
-
-          {boards
-            .filter((b) => b.folder === selectedFolder)
-            .map((b) => {
-              const isActive = b.id === currentBoardId;
-              const isEditing = editingBoardId === b.id;
-
-              return (
-                <div
-                  key={b.id}
-                  onClick={() => !isEditing && handleSwitchBoard(b)}
-                  className={`group flex items-center justify-between p-2.5 rounded-lg text-xs cursor-pointer transition ${
-                    isActive
-                      ? 'bg-indigo-600 text-white shadow-sm'
-                      : 'hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300'
-                  }`}
-                >
-                  {isEditing ? (
-                    <div className="flex items-center gap-1 w-full" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="text"
-                        autoFocus
-                        value={editBoardTitleInput}
-                        onChange={(e) => setEditBoardTitleInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSaveRenameBoard(b.id)}
-                        className="flex-1 px-1.5 py-0.5 text-xs text-zinc-900 border border-indigo-400 rounded bg-white"
-                      />
-                      <button
-                        onClick={() => handleSaveRenameBoard(b.id)}
-                        className="p-1 text-emerald-600 bg-white hover:bg-emerald-50 rounded"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="flex items-center gap-2 truncate flex-1 pr-1">
-                        <FileText
-                          className={`w-3.5 h-3.5 shrink-0 ${
-                            isActive ? 'text-white' : 'text-zinc-400'
-                          }`}
-                        />
-                        <span className="truncate font-medium">{b.title}</span>
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        <span
-                          className={`text-[10px] shrink-0 mr-1 ${
-                            isActive ? 'text-indigo-200' : 'text-zinc-400'
-                          }`}
-                        >
-                          {b.updatedAt}
-                        </span>
-
-                        <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 transition">
-                          <button
-                            onClick={(e) => handleStartRenameBoard(e, b)}
-                            title="重命名草图"
-                            className={`p-1 rounded ${
-                              isActive ? 'text-indigo-200 hover:text-white' : 'text-zinc-400 hover:text-indigo-600'
-                            }`}
-                          >
-                            <Edit2 className="w-3 h-3" />
-                          </button>
-                          <button
-                            onClick={(e) => handleDeleteBoard(e, b)}
-                            title="删除草图"
-                            className={`p-1 rounded ${
-                              isActive ? 'text-indigo-200 hover:text-white' : 'text-zinc-400 hover:text-rose-500'
-                            }`}
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-              );
-            })}
-        </div>
-
-        <div className="p-3 border-t border-zinc-200 dark:border-zinc-800 shrink-0">
+        <div className="flex items-center gap-2">
           <button
-            onClick={handleCreateNewBoard}
-            className="w-full flex items-center justify-center gap-1.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-medium transition shadow-sm"
+            type="button"
+            onClick={() => setIsAiSidebarOpen((prev) => !prev)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition border ${
+              isAiSidebarOpen
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
+            }`}
           >
-            <Plus className="w-3.5 h-3.5" />
-            新建空白草图
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>AI 助手</span>
           </button>
+
+          <button
+            type="button"
+            onClick={handleOpenCodeGen}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#1e8354] hover:bg-[#186c45] active:bg-[#135737] text-white rounded-xl text-xs font-semibold shadow-sm transition"
+          >
+            <Code2 className="w-4 h-4" />
+            <span>选区生成代码</span>
+            {selectedElements.length > 0 && (
+              <span className="bg-emerald-950/40 text-emerald-100 px-1.5 py-0.2 rounded-full text-[10px] font-bold">
+                {selectedElements.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSaveScene}
+            disabled={isSaving}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 rounded-xl text-xs font-semibold transition disabled:opacity-50"
+          >
+            {isSaving ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Save className="w-3.5 h-3.5" />
+            )}
+            <span>{isSaving ? '保存中' : '保存'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleOpenShare}
+            className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition"
+            title="分享此画板"
+          >
+            <Share2 className="w-4 h-4" />
+          </button>
+
+          {(currentUser?.role === 'admin' || currentUser?.role === 'superadmin') && (
+            <button
+              type="button"
+              onClick={() => setIsMemberManageOpen(true)}
+              className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition"
+              title="项目成员权限管理"
+            >
+              <Users className="w-4 h-4" />
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setIsModelConfigOpen(true)}
+            className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition"
+            title="用户大模型配置"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+
+          <div className="h-4 w-[1px] bg-gray-200 mx-1" />
+
+          {/* 用户下拉菜单 */}
+          <div className="relative" ref={userMenuRef}>
+            <button
+              type="button"
+              onClick={() => setIsUserMenuOpen((prev) => !prev)}
+              className="flex items-center gap-2 pl-1.5 pr-2 py-1 rounded-xl hover:bg-gray-100 transition border border-transparent hover:border-gray-200"
+            >
+              <div className="w-7 h-7 rounded-full bg-linear-to-tr from-indigo-600 to-violet-500 text-white flex items-center justify-center font-bold text-xs uppercase shadow-xs">
+                {currentUser?.username ? currentUser.username[0] : 'U'}
+              </div>
+              <span className="text-xs font-semibold text-gray-700 max-w-[80px] truncate">
+                {currentUser?.username || '用户'}
+              </span>
+              <ChevronDown className="w-3 h-3 text-gray-400" />
+            </button>
+
+            {isUserMenuOpen && (
+              <div className="absolute right-0 mt-2 w-56 bg-white rounded-2xl shadow-xl border border-gray-100 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
+                <div className="px-4 py-2.5 border-b border-gray-100">
+                  <p className="text-xs font-bold text-gray-900 truncate">
+                    {currentUser?.username}
+                  </p>
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                      <Shield className="w-2.5 h-2.5 mr-1" />
+                      {currentUser?.role === 'superadmin'
+                        ? '超级管理员'
+                        : currentUser?.role === 'admin'
+                        ? '管理员'
+                        : currentUser?.role === 'editor'
+                        ? '编辑者'
+                        : '只读访客'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="py-1">
+                  {currentUser?.role === 'superadmin' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        setIsUserManageOpen(true);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-gray-700 hover:bg-gray-50 transition"
+                    >
+                      <UserCheck className="w-4 h-4 text-indigo-600" />
+                      <span>系统用户管理</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsUserMenuOpen(false);
+                      setIsModelConfigOpen(true);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-gray-700 hover:bg-gray-50 transition"
+                  >
+                    <Settings className="w-4 h-4 text-gray-500" />
+                    <span>大模型 API 设置</span>
+                  </button>
+                </div>
+
+                <div className="border-t border-gray-100 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-red-600 hover:bg-red-50 transition font-medium"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span>退出登录</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </aside>
+      </header>
 
-      {/* 主画布区域 */}
-      <div className="flex-1 flex flex-col h-full relative overflow-hidden">
-        <header className="h-12 border-b border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-sm px-3 flex items-center justify-between z-20 shrink-0 select-none">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setIsProjectDrawerOpen(true)}
-              className="p-1.5 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition"
-              title="展开项目与草图管理"
-            >
-              <PanelLeft className="w-4 h-4" />
-            </button>
+      {/* 画布与独立侧栏容器 */}
+      <div className="flex-1 w-full h-full flex overflow-hidden relative">
+        <main className="flex-1 h-full w-full relative">
+          <ExcalidrawWrapper
+            boardId={currentBoardId}
+            boardTitle={currentBoardTitle}
+            projectName={currentProjectName}
+            sceneData={sceneData}
+            currentUser={currentUser}
+            onApiReady={handleApiReady}
+            onChange={handleElementsChange}
+            onSave={handleSaveScene}
+            onOpenProjectDrawer={() => setIsDrawerOpen(true)}
+            onOpenModelConfig={() => setIsModelConfigOpen(true)}
+            onOpenCodeGen={handleOpenCodeGen}
+            onToggleAiSidebar={() => setIsAiSidebarOpen((prev) => !prev)}
+            onOpenMemberManage={() => setIsMemberManageOpen(true)}
+            onOpenShareModal={handleOpenShare}
+          />
+        </main>
 
-            <button
-              onClick={() => setIsProjectDrawerOpen(true)}
-              className="px-2.5 py-1 text-xs font-medium text-zinc-700 dark:text-zinc-300 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-md transition flex items-center gap-1.5"
-            >
-              <FolderOpen className="w-3.5 h-3.5 text-indigo-500" />
-              <span>{selectedFolder}</span>
-            </button>
-
-            <div className="h-4 w-px bg-zinc-200 dark:bg-zinc-700 mx-0.5" />
-
-            <input
-              type="text"
-              value={boardTitle}
-              onChange={(e) => {
-                const newTitle = e.target.value;
-                setBoardTitle(newTitle);
-                const nextBoards = boards.map((b) =>
-                  b.id === currentBoardId ? { ...b, title: newTitle } : b
-                );
-                setBoards(nextBoards);
-                syncWorkspaceToMinio(folders, nextBoards);
-              }}
-              placeholder="草图名称..."
-              className="w-48 sm:w-64 md:w-80 px-2.5 py-1 text-sm font-semibold text-zinc-900 dark:text-zinc-100 bg-zinc-50/70 dark:bg-zinc-800/60 hover:bg-zinc-100 dark:hover:bg-zinc-800 border border-transparent focus:border-indigo-400 focus:bg-white dark:focus:bg-zinc-900 rounded-md transition focus:outline-none truncate"
-              title="点击可直接编辑草图名称"
+        <div
+          className={`h-full border-l border-gray-200 bg-white transition-all duration-200 ease-in-out shrink-0 overflow-hidden ${
+            isAiSidebarOpen ? 'w-[380px]' : 'w-0 border-l-0'
+          }`}
+        >
+          {isAiSidebarOpen && (
+            <AiSidebar
+              isOpen={isAiSidebarOpen}
+              onClose={() => setIsAiSidebarOpen(false)}
+              excalidrawAPI={excalidrawAPI}
             />
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setIsCodeModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-medium transition shadow-sm"
-            >
-              <Code2 className="w-3.5 h-3.5" />
-              选区生成代码
-            </button>
-
-            <button
-              onClick={handleSaveToCloud}
-              disabled={isSaving}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 rounded-lg text-xs font-medium transition disabled:opacity-50"
-            >
-              {isSaving ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Cloud className="w-3.5 h-3.5" />
-              )}
-              {isSaving ? '保存中...' : '保存到云端'}
-            </button>
-
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(window.location.href);
-                alert('分享链接已复制到剪贴板！');
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-medium transition shadow-sm"
-            >
-              <Share2 className="w-3.5 h-3.5" />
-              只读分享
-            </button>
-
-            <div className="h-4 w-px bg-zinc-200 dark:bg-zinc-700 mx-1" />
-
-            <button
-              onClick={() => setIsMemberModalOpen(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg text-xs font-medium transition"
-            >
-              <Users className="w-3.5 h-3.5" />
-              成员管理
-            </button>
-
-            <div className="flex items-center gap-1 px-2.5 py-1 text-xs text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 rounded-lg">
-              <ShieldCheck className="w-3.5 h-3.5 text-indigo-500" />
-              <span>admin</span>
-            </div>
-
-            <button
-              onClick={() => setIsAiOpen(!isAiOpen)}
-              className={`p-1.5 rounded-lg border transition ml-1 ${
-                isAiOpen
-                  ? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-300 text-indigo-600'
-                  : 'border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-              }`}
-              title="切换 AI 绘图助手"
-            >
-              <Sparkles className="w-4 h-4" />
-            </button>
-          </div>
-        </header>
-
-        <div className="flex-1 w-full h-[calc(100vh-48px)] relative">
-          <ExcalidrawWrapper ref={excalidrawRef} />
+          )}
         </div>
       </div>
 
-      {isAiOpen && (
-        <AiSidebar
-          isOpen={isAiOpen}
-          onClose={() => setIsAiOpen(false)}
-          excalidrawRef={excalidrawRef}
-        />
-      )}
+      {/* 模态弹窗 */}
+      <ProjectDrawer
+        isOpen={isDrawerOpen}
+        onClose={() => setIsDrawerOpen(false)}
+        projects={projects}
+        currentProjectId={currentProjectId}
+        currentBoardId={currentBoardId}
+        onSelectBoard={handleSelectBoard}
+        onRefreshProjects={fetchProjects}
+      />
 
-      <CodeGenerationModal
-        isOpen={isCodeModalOpen}
-        onClose={() => setIsCodeModalOpen(false)}
-        excalidrawRef={excalidrawRef}
+      <ModelConfigModal
+        isOpen={isModelConfigOpen}
+        onClose={() => setIsModelConfigOpen(false)}
+        onSaved={handleModelConfigSaved}
+      />
+
+      <CodePreviewModal
+        isOpen={isCodeGenOpen}
+        onClose={() => setIsCodeGenOpen(false)}
+        selectedElements={selectedElements}
+        llmConfig={llmConfig}
       />
 
       <MemberManagementModal
-        isOpen={isMemberModalOpen}
-        onClose={() => setIsMemberModalOpen(false)}
+        isOpen={isMemberManageOpen}
+        onClose={() => setIsMemberManageOpen(false)}
       />
+
+      <UserManagementModal
+        isOpen={isUserManageOpen}
+        onClose={() => setIsUserManageOpen(false)}
+      />
+
+      {isShareModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-md w-full border border-gray-100">
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <Share2 className="w-5 h-5 text-indigo-600" />
+                <h3 className="text-base font-bold text-gray-900">分享此画板</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsShareModalOpen(false)}
+                className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-500 mt-3 mb-2">
+              获得此链接的用户均可免登录以只读模式实时查阅此画板：
+            </p>
+
+            <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl p-2 mb-4">
+              <input
+                type="text"
+                readOnly
+                value={shareUrl}
+                className="bg-transparent text-xs text-gray-700 flex-1 outline-none font-mono"
+              />
+              <button
+                type="button"
+                onClick={handleCopyShareUrl}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 shrink-0 transition"
+              >
+                {copiedShare ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    已复制
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    复制
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsShareModalOpen(false)}
+                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-medium transition"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSaveToast && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full text-center border border-gray-100">
+            <h4 className="text-base font-bold text-gray-900 mb-6">
+              画板已成功持久化至云端！
+            </h4>
+            <button
+              type="button"
+              onClick={() => setShowSaveToast(false)}
+              className="w-full py-2.5 bg-[#4a4214] hover:bg-[#3b3510] text-white rounded-xl font-medium text-sm transition shadow-sm"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+export default function MainPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="w-screen h-screen flex flex-col items-center justify-center bg-gray-50 text-gray-600 gap-3">
+          <Loader2 className="w-9 h-9 animate-spin text-indigo-600" />
+          <p className="text-sm font-medium">正在载入工作空间...</p>
+        </div>
+      }
+    >
+      <MainContent />
+    </Suspense>
   );
 }
