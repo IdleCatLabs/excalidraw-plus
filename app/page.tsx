@@ -8,16 +8,13 @@ import AiSidebar from '@/components/AiSidebar';
 import ModelConfigModal, { LOCAL_STORAGE_LLM_KEY, LLMConfig } from '@/components/ModelConfigModal';
 import CodePreviewModal from '@/components/CodePreviewModal';
 import MemberManagementModal from '@/components/MemberManagementModal';
-import UserManagementModal from '@/components/UserManagementModal';
 import {
   Folder,
   Code2,
-  Settings,
   Save,
   PanelLeft,
   Sparkles,
   Users,
-  UserCheck,
   Share2,
   Loader2,
   ChevronDown,
@@ -71,22 +68,20 @@ function MainContent() {
     maxTokens: 4096,
   });
 
-  // 5. 模态框展开状态
+  // 5. 模态框与抽屉控制
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [isAiSidebarOpen, setIsAiSidebarOpen] = useState<boolean>(false);
   const [isModelConfigOpen, setIsModelConfigOpen] = useState<boolean>(false);
   const [isCodeGenOpen, setIsCodeGenOpen] = useState<boolean>(false);
   const [isMemberManageOpen, setIsMemberManageOpen] = useState<boolean>(false);
-  const [isUserManageOpen, setIsUserManageOpen] = useState<boolean>(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
 
   // 分享链接状态
   const [shareUrl, setShareUrl] = useState<string>('');
   const [copiedShare, setCopiedShare] = useState<boolean>(false);
-
   const initializedRef = useRef<boolean>(false);
 
-  // 点击外部收起用户菜单
+  // 点击外部收起用户下拉菜单
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
@@ -97,7 +92,7 @@ function MainContent() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // 加载本地已存的大模型 Key
+  // 加载本地持久化配置
   useEffect(() => {
     try {
       const stored = localStorage.getItem(LOCAL_STORAGE_LLM_KEY);
@@ -126,7 +121,7 @@ function MainContent() {
         } else {
           setCurrentUser({
             id: 'admin-1',
-            username: 'Admin',
+            username: 'admin',
             role: 'superadmin',
           });
         }
@@ -134,7 +129,7 @@ function MainContent() {
       .catch(() => {
         setCurrentUser({
           id: 'admin-1',
-          username: 'Admin',
+          username: 'admin',
           role: 'superadmin',
         });
       })
@@ -197,7 +192,7 @@ function MainContent() {
     return [];
   }, []);
 
-  // 页面初次初始化
+  // 页面初始化
   useEffect(() => {
     if (authLoading || initializedRef.current) return;
     initializedRef.current = true;
@@ -260,6 +255,7 @@ function MainContent() {
         localStorage.setItem('current_project_id', currentProjectId);
         localStorage.setItem('current_board_title', currentBoardTitle);
         setShowSaveToast(true);
+        fetchProjects();
       } else {
         const errData = await res.json();
         alert('保存画板失败: ' + (errData.error || '未知错误'));
@@ -288,7 +284,27 @@ function MainContent() {
     setIsDrawerOpen(false);
   };
 
-  // 核心防死循环：对比选中元素 ID，非必要不触发 setState
+  const handleBoardRenamed = (boardId: string, newTitle: string) => {
+    if (boardId === currentBoardId) {
+      setCurrentBoardTitle(newTitle);
+      localStorage.setItem('current_board_title', newTitle);
+    }
+  };
+
+  const handleBoardDeleted = (boardId: string) => {
+    if (boardId === currentBoardId) {
+      setCurrentBoardId('default-board');
+      setCurrentBoardTitle('12号');
+      loadScene('default-board');
+    }
+  };
+
+  const handleProjectRenamed = (projectId: string, newName: string) => {
+    if (projectId === currentProjectId) {
+      setCurrentProjectName(newName);
+    }
+  };
+
   const handleElementsChange = useCallback((elements: readonly any[], appState: any) => {
     const selectedObj = appState?.selectedElementIds || {};
     const keys = Object.keys(selectedObj).filter((k) => selectedObj[k]).sort().join(',');
@@ -334,6 +350,7 @@ function MainContent() {
   const handleModelConfigSaved = (newConfig: LLMConfig) => {
     setLlmConfig(newConfig);
     localStorage.setItem(LOCAL_STORAGE_LLM_KEY, JSON.stringify(newConfig));
+    window.dispatchEvent(new Event('llm_config_updated'));
   };
 
   if (authLoading) {
@@ -349,6 +366,7 @@ function MainContent() {
     <div className="w-screen h-screen flex flex-col overflow-hidden bg-[#fafafa] select-none">
       {/* 顶部全局导航栏 */}
       <header className="h-14 bg-white border-b border-gray-200 px-4 flex items-center justify-between z-20 shrink-0 shadow-xs">
+        {/* 左侧：抽屉按钮、项目名、画板标题 */}
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -387,34 +405,9 @@ function MainContent() {
           )}
         </div>
 
+        {/* 右侧按指定顺序排列：保存 / 分享 / 项目成员 / 选区生成代码 / AI助手 / 用户信息 */}
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setIsAiSidebarOpen((prev) => !prev)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition border ${
-              isAiSidebarOpen
-                ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>AI 助手</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleOpenCodeGen}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#1e8354] hover:bg-[#186c45] active:bg-[#135737] text-white rounded-xl text-xs font-semibold shadow-sm transition"
-          >
-            <Code2 className="w-4 h-4" />
-            <span>选区生成代码</span>
-            {selectedElements.length > 0 && (
-              <span className="bg-emerald-950/40 text-emerald-100 px-1.5 py-0.2 rounded-full text-[10px] font-bold">
-                {selectedElements.length}
-              </span>
-            )}
-          </button>
-
+          {/* 1. 保存 */}
           <button
             type="button"
             onClick={handleSaveScene}
@@ -429,6 +422,7 @@ function MainContent() {
             <span>{isSaving ? '保存中' : '保存'}</span>
           </button>
 
+          {/* 2. 分享 */}
           <button
             type="button"
             onClick={handleOpenShare}
@@ -438,29 +432,48 @@ function MainContent() {
             <Share2 className="w-4 h-4" />
           </button>
 
-          {(currentUser?.role === 'admin' || currentUser?.role === 'superadmin') && (
-            <button
-              type="button"
-              onClick={() => setIsMemberManageOpen(true)}
-              className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition"
-              title="项目成员权限管理"
-            >
-              <Users className="w-4 h-4" />
-            </button>
-          )}
-
+          {/* 3. 项目成员 */}
           <button
             type="button"
-            onClick={() => setIsModelConfigOpen(true)}
+            onClick={() => setIsMemberManageOpen(true)}
             className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition"
-            title="用户大模型配置"
+            title="项目成员权限管理"
           >
-            <Settings className="w-4 h-4" />
+            <Users className="w-4 h-4" />
+          </button>
+
+          {/* 4. 选区生成代码 */}
+          <button
+            type="button"
+            onClick={handleOpenCodeGen}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#1e8354] hover:bg-[#186c45] active:bg-[#135737] text-white rounded-xl text-xs font-semibold shadow-sm transition"
+          >
+            <Code2 className="w-4 h-4" />
+            <span>选区生成代码</span>
+            {selectedElements.length > 0 && (
+              <span className="bg-emerald-950/40 text-emerald-100 px-1.5 py-0.2 rounded-full text-[10px] font-bold">
+                {selectedElements.length}
+              </span>
+            )}
+          </button>
+
+          {/* 5. AI助手 */}
+          <button
+            type="button"
+            onClick={() => setIsAiSidebarOpen((prev) => !prev)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition border ${
+              isAiSidebarOpen
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>AI 助手</span>
           </button>
 
           <div className="h-4 w-[1px] bg-gray-200 mx-1" />
 
-          {/* 用户下拉菜单 */}
+          {/* 用户信息与纯退出登录菜单 */}
           <div className="relative" ref={userMenuRef}>
             <button
               type="button"
@@ -477,58 +490,24 @@ function MainContent() {
             </button>
 
             {isUserMenuOpen && (
-              <div className="absolute right-0 mt-2 w-56 bg-white rounded-2xl shadow-xl border border-gray-100 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
-                <div className="px-4 py-2.5 border-b border-gray-100">
+              <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 py-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
+                <div className="px-4 py-2 border-b border-gray-100">
                   <p className="text-xs font-bold text-gray-900 truncate">
                     {currentUser?.username}
                   </p>
-                  <div className="flex items-center gap-1.5 mt-1">
-                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
                       <Shield className="w-2.5 h-2.5 mr-1" />
-                      {currentUser?.role === 'superadmin'
-                        ? '超级管理员'
-                        : currentUser?.role === 'admin'
-                        ? '管理员'
-                        : currentUser?.role === 'editor'
-                        ? '编辑者'
-                        : '只读访客'}
+                      {currentUser?.role === 'superadmin' ? '管理员' : '项目成员'}
                     </span>
                   </div>
                 </div>
 
-                <div className="py-1">
-                  {currentUser?.role === 'superadmin' && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsUserMenuOpen(false);
-                        setIsUserManageOpen(true);
-                      }}
-                      className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-gray-700 hover:bg-gray-50 transition"
-                    >
-                      <UserCheck className="w-4 h-4 text-indigo-600" />
-                      <span>系统用户管理</span>
-                    </button>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsUserMenuOpen(false);
-                      setIsModelConfigOpen(true);
-                    }}
-                    className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-gray-700 hover:bg-gray-50 transition"
-                  >
-                    <Settings className="w-4 h-4 text-gray-500" />
-                    <span>大模型 API 设置</span>
-                  </button>
-                </div>
-
-                <div className="border-t border-gray-100 pt-1">
+                <div className="pt-1">
                   <button
                     type="button"
                     onClick={handleLogout}
-                    className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-red-600 hover:bg-red-50 transition font-medium"
+                    className="w-full flex items-center gap-2 px-4 py-2 text-xs text-red-600 hover:bg-red-50 transition font-medium"
                   >
                     <LogOut className="w-4 h-4" />
                     <span>退出登录</span>
@@ -540,7 +519,7 @@ function MainContent() {
         </div>
       </header>
 
-      {/* 画布与独立侧栏容器 */}
+      {/* 画布与自带拖拽调宽的完整 AI 侧边栏 */}
       <div className="flex-1 w-full h-full flex overflow-hidden relative">
         <main className="flex-1 h-full w-full relative">
           <ExcalidrawWrapper
@@ -553,7 +532,6 @@ function MainContent() {
             onChange={handleElementsChange}
             onSave={handleSaveScene}
             onOpenProjectDrawer={() => setIsDrawerOpen(true)}
-            onOpenModelConfig={() => setIsModelConfigOpen(true)}
             onOpenCodeGen={handleOpenCodeGen}
             onToggleAiSidebar={() => setIsAiSidebarOpen((prev) => !prev)}
             onOpenMemberManage={() => setIsMemberManageOpen(true)}
@@ -561,22 +539,16 @@ function MainContent() {
           />
         </main>
 
-        <div
-          className={`h-full border-l border-gray-200 bg-white transition-all duration-200 ease-in-out shrink-0 overflow-hidden ${
-            isAiSidebarOpen ? 'w-[380px]' : 'w-0 border-l-0'
-          }`}
-        >
-          {isAiSidebarOpen && (
-            <AiSidebar
-              isOpen={isAiSidebarOpen}
-              onClose={() => setIsAiSidebarOpen(false)}
-              excalidrawAPI={excalidrawAPI}
-            />
-          )}
-        </div>
+        {isAiSidebarOpen && (
+          <AiSidebar
+            isOpen={isAiSidebarOpen}
+            onClose={() => setIsAiSidebarOpen(false)}
+            excalidrawAPI={excalidrawAPI}
+          />
+        )}
       </div>
 
-      {/* 模态弹窗 */}
+      {/* 项目抽屉 */}
       <ProjectDrawer
         isOpen={isDrawerOpen}
         onClose={() => setIsDrawerOpen(false)}
@@ -585,14 +557,19 @@ function MainContent() {
         currentBoardId={currentBoardId}
         onSelectBoard={handleSelectBoard}
         onRefreshProjects={fetchProjects}
+        onBoardRenamed={handleBoardRenamed}
+        onBoardDeleted={handleBoardDeleted}
+        onProjectRenamed={handleProjectRenamed}
       />
 
+      {/* 大模型配置弹窗 */}
       <ModelConfigModal
         isOpen={isModelConfigOpen}
         onClose={() => setIsModelConfigOpen(false)}
         onSaved={handleModelConfigSaved}
       />
 
+      {/* 选区代码生成与预览模态框 */}
       <CodePreviewModal
         isOpen={isCodeGenOpen}
         onClose={() => setIsCodeGenOpen(false)}
@@ -600,16 +577,15 @@ function MainContent() {
         llmConfig={llmConfig}
       />
 
+      {/* 项目成员权限管理模态框 */}
       <MemberManagementModal
         isOpen={isMemberManageOpen}
         onClose={() => setIsMemberManageOpen(false)}
+        projectId={currentProjectId}
+        projectName={currentProjectName}
       />
 
-      <UserManagementModal
-        isOpen={isUserManageOpen}
-        onClose={() => setIsUserManageOpen(false)}
-      />
-
+      {/* 分享弹窗 */}
       {isShareModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-md w-full border border-gray-100">
@@ -670,6 +646,7 @@ function MainContent() {
         </div>
       )}
 
+      {/* 保存成功 Toast 弹窗 */}
       {showSaveToast && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full text-center border border-gray-100">

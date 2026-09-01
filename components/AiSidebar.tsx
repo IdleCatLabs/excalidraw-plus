@@ -22,7 +22,7 @@ import {
   Code2,
   Palette,
 } from 'lucide-react';
-import { ModelConfigModal } from './ModelConfigModal';
+import { ModelConfigModal, LOCAL_STORAGE_LLM_KEY, LLMConfig } from './ModelConfigModal';
 
 export interface MessageItem {
   id?: string;
@@ -44,6 +44,7 @@ export interface ChatThread {
 export interface AiSidebarProps {
   isOpen?: boolean;
   onClose?: () => void;
+  excalidrawAPI?: any;
   excalidrawRef?: any;
   threads?: ChatThread[];
   activeThreadId?: string;
@@ -62,6 +63,7 @@ export interface AiSidebarProps {
   [key: string]: any;
 }
 
+// 规范化 Excalidraw 图元数据结构
 function normalizeExcalidrawElement(raw: any, index: number): any {
   const id = raw.id || `elem_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`;
   const type = raw.type || 'rectangle';
@@ -149,6 +151,7 @@ function normalizeExcalidrawElement(raw: any, index: number): any {
   return baseElement;
 }
 
+// 从大模型返回的内容中精准提取并修复 JSON 图元数据
 function extractElementsFromContent(content: string): any[] | null {
   if (!content || typeof content !== 'string') return null;
 
@@ -261,6 +264,7 @@ function extractElementsFromContent(content: string): any[] | null {
 export const AiSidebar: React.FC<AiSidebarProps> = ({
   isOpen,
   onClose,
+  excalidrawAPI,
   excalidrawRef,
   threads: externalThreads,
   activeThreadId,
@@ -307,12 +311,13 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
   const abortControllerRef = useRef<any>(null);
 
   const [models, setModels] = useState<string[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [selectedModel, setSelectedModel] = useState<string>('qwen3.7-plus');
   const [isConfigured, setIsConfigured] = useState<boolean>(true);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
 
   const messagesEndRef = useRef<any>(null);
 
+  // 初始化加载侧边栏宽度
   useEffect(() => {
     const savedWidth = localStorage.getItem('excalidraw_plus_ai_sidebar_width');
     if (savedWidth) {
@@ -323,6 +328,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
     }
   }, []);
 
+  // 左右拖拽调节宽度处理
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     setIsResizing(true);
@@ -357,17 +363,52 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
     };
   }, [isResizing, handleMouseMove, handleMouseUp]);
 
+  // 核心修复：全面识别多种数据格式与 LocalStorage，解决“去配置模型”误报
   const fetchModels = async () => {
     try {
+      let localConfig: Partial<LLMConfig> = {};
+      try {
+        const stored = localStorage.getItem(LOCAL_STORAGE_LLM_KEY);
+        if (stored) localConfig = JSON.parse(stored);
+      } catch {}
+
       const res = await fetch('/api/models');
       const data = await res.json();
-      if (data.configured && data.models && data.models.length > 0) {
+      const config = data?.config || {};
+
+      const hasValidKey = Boolean(
+        localConfig.apiKey ||
+        data?.hasKey ||
+        data?.configured ||
+        (config.apiKey && !config.apiKey.startsWith('•••'))
+      );
+
+      const rawModels =
+        localConfig.models ||
+        config.models ||
+        data?.models ||
+        'deepseek-v4-pro,deepseek-v4-flash,qwen3.7-plus,glm-5.2';
+
+      const modelArray: string[] = Array.isArray(rawModels)
+        ? rawModels
+        : typeof rawModels === 'string'
+        ? rawModels.split(/[,，\n]/).map((m: string) => m.trim()).filter(Boolean)
+        : [];
+
+      if (hasValidKey && modelArray.length > 0) {
         setIsConfigured(true);
-        setModels(data.models);
-        setSelectedModel(data.defaultModel || data.models[0]);
+        setModels(modelArray);
+        const def =
+          localConfig.defaultModel ||
+          config.defaultModel ||
+          data?.defaultModel ||
+          modelArray[0] ||
+          'qwen3.7-plus';
+
+        setSelectedModel((prev) => (prev && modelArray.includes(prev) ? prev : def));
       } else {
-        setIsConfigured(false);
-        setModels([]);
+        setIsConfigured(hasValidKey);
+        setModels(modelArray.length > 0 ? modelArray : ['qwen3.7-plus']);
       }
     } catch (e) {
       console.error('加载模型列表失败:', e);
@@ -379,9 +420,20 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
   }, []);
 
   useEffect(() => {
+    const handleStorage = () => fetchModels();
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('llm_config_updated', handleStorage);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('llm_config_updated', handleStorage);
+    };
+  }, []);
+
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentThread?.messages, loading]);
 
+  // 将 AI 生成的图元自动追加或覆盖至画布
   const applyElementsToCanvas = async (
     rawElements: any[],
     mode: 'append' | 'replace' = 'append',
@@ -399,6 +451,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
       }
 
       const api =
+        excalidrawAPI ||
         excalidrawRef?.current?.excalidrawAPI ||
         excalidrawRef?.current ||
         (typeof window !== 'undefined' ? (window as any).__EXCALIDRAW_API__ : null);
@@ -413,7 +466,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
         if (typeof api.updateScene === 'function') {
           api.updateScene({
             elements: finalElements,
-            appState: { viewBackgroundColor: '#f5f5f7' },
+            appState: { viewBackgroundColor: '#ffffff' },
             commitToHistory: true,
           });
         }
@@ -421,7 +474,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
         setTimeout(() => {
           if (typeof api.scrollToContent === 'function') {
             api.scrollToContent(validElements, {
-              fitToViewport: true,
+              fitToContent: true,
               animate: true,
             });
           }
@@ -585,6 +638,12 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
     abortControllerRef.current = controller;
 
     try {
+      let localCfg: Partial<LLMConfig> = {};
+      try {
+        const stored = localStorage.getItem(LOCAL_STORAGE_LLM_KEY);
+        if (stored) localCfg = JSON.parse(stored);
+      } catch {}
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -592,6 +651,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
         body: JSON.stringify({
           messages: [...currentMsgs, userMsg].map((m) => ({ role: m.role, content: m.content })),
           model: selectedModel,
+          llmConfig: localCfg,
         }),
       });
 
@@ -644,6 +704,27 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
             );
           }
         }
+      } else {
+        const json = await res.json();
+        fullContent = json.reply || json.content || '';
+        if (onUpdateMessages) {
+          onUpdateMessages(currentActiveId, (prev) =>
+            prev.map((m) => (m.id === assistantMsgId ? { ...m, content: fullContent } : m))
+          );
+        } else {
+          setInternalThreads((prev) =>
+            prev.map((t) =>
+              t.id === currentActiveId
+                ? {
+                    ...t,
+                    messages: t.messages.map((m) =>
+                      m.id === assistantMsgId ? { ...m, content: fullContent } : m
+                    ),
+                  }
+                : t
+            )
+          );
+        }
       }
 
       const detectedElements = extractElementsFromContent(fullContent);
@@ -684,8 +765,9 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
     <>
       <div
         style={{ width: `${sidebarWidth}px` }}
-        className="relative h-full bg-white dark:bg-zinc-900 border-l border-zinc-200 dark:border-zinc-800 shadow-xl flex flex-col shrink-0 select-text transition-[width] duration-75 ease-out"
+        className="relative h-full bg-white border-l border-gray-200 shadow-xl flex flex-col shrink-0 select-text transition-[width] duration-75 ease-out"
       >
+        {/* 左侧自由拖拽把手 */}
         <div
           onMouseDown={handleMouseDown}
           className={`absolute left-0 top-0 bottom-0 w-2 -ml-1 cursor-col-resize z-50 group flex items-center justify-center hover:bg-indigo-500/20 transition ${
@@ -693,23 +775,24 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           }`}
           title="按住左右拖拽调节侧边栏宽度"
         >
-          <div className="w-0.5 h-8 bg-zinc-300 dark:bg-zinc-700 group-hover:bg-indigo-500 rounded transition" />
+          <div className="w-0.5 h-8 bg-gray-300 group-hover:bg-indigo-500 rounded transition" />
         </div>
 
-        <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-800">
+        {/* 顶部工具栏 */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
           <div className="flex items-center gap-2">
-            <Sparkles className="w-5 h-5 text-indigo-500"/>
-            <h2 className="font-semibold text-zinc-900 dark:text-zinc-100 text-sm">AI 绘图助手</h2>
+            <Sparkles className="w-5 h-5 text-indigo-600"/>
+            <h2 className="font-bold text-gray-900 text-sm">AI 绘图助手</h2>
           </div>
 
           <div className="flex items-center gap-1">
             <button
               onClick={() => setShowHistoryPanel((prev) => !prev)}
               title="历史会话列表"
-              className={`p-1.5 rounded-md transition ${
+              className={`p-1.5 rounded-lg transition ${
                 showHistoryPanel
-                  ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300'
-                  : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                  ? 'bg-indigo-100 text-indigo-700'
+                  : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
               }`}
             >
               <History className="w-4 h-4"/>
@@ -717,21 +800,21 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
             <button
               onClick={handleCreateNewThread}
               title="新建会话 (+)"
-              className="p-1.5 text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+              className="p-1.5 text-gray-500 hover:text-gray-800 rounded-lg hover:bg-gray-100 transition"
             >
               <Plus className="w-4 h-4"/>
             </button>
             <button
               onClick={() => setIsConfigModalOpen(true)}
               title="配置大模型"
-              className="p-1.5 text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+              className="p-1.5 text-gray-500 hover:text-gray-800 rounded-lg hover:bg-gray-100 transition"
             >
               <Settings className="w-4 h-4"/>
             </button>
             {onClose && (
               <button
                 onClick={onClose}
-                className="p-1.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 rounded-md"
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
               >
                 <X className="w-4 h-4"/>
               </button>
@@ -739,49 +822,51 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           </div>
         </div>
 
-        <div className="px-4 py-1.5 bg-zinc-100/70 dark:bg-zinc-800/40 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between text-xs">
+        {/* 会话切换指示条 */}
+        <div className="px-4 py-1.5 bg-gray-50 border-b border-gray-200 flex items-center justify-between text-xs">
           <button
             onClick={() => setShowHistoryPanel((prev) => !prev)}
-            className="flex items-center gap-1.5 text-zinc-600 dark:text-zinc-300 hover:text-indigo-600 dark:hover:text-indigo-400 max-w-[70%] font-medium truncate"
+            className="flex items-center gap-1.5 text-gray-700 hover:text-indigo-600 max-w-[70%] font-semibold truncate"
             title="点击展开会话历史"
           >
-            <MessageSquare className="w-3.5 h-3.5 shrink-0 text-indigo-500"/>
+            <MessageSquare className="w-3.5 h-3.5 shrink-0 text-indigo-600"/>
             <span className="truncate">{currentThread?.title || '主设计会话'}</span>
-            <ChevronDown className="w-3 h-3 text-zinc-400 shrink-0"/>
+            <ChevronDown className="w-3 h-3 text-gray-400 shrink-0"/>
           </button>
-          <span className="text-[11px] text-zinc-400">
+          <span className="text-[11px] text-gray-400">
             共 {threads.length} 个会话
           </span>
         </div>
 
-        <div className="px-4 py-2 bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between text-xs">
-          <span className="text-zinc-500">当前模型:</span>
+        {/* 模型选择状态条 */}
+        <div className="px-4 py-2 bg-white border-b border-gray-100 flex items-center justify-between text-xs">
+          <span className="text-gray-500 font-medium">当前模型:</span>
           {isConfigured && models.length > 0 ? (
             <div className="relative">
               <select
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
-                className="bg-transparent font-medium text-zinc-800 dark:text-zinc-200 pr-5 appearance-none focus:outline-none cursor-pointer"
+                className="bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1 text-xs font-mono font-semibold text-gray-800 pr-6 outline-none focus:border-indigo-500 cursor-pointer"
               >
                 {models.map((m) => (
-                  <option key={m} value={m} className="dark:bg-zinc-900">
+                  <option key={m} value={m}>
                     {m}
                   </option>
                 ))}
               </select>
-              <ChevronDown className="w-3.5 h-3.5 absolute right-0 top-0.5 text-zinc-400 pointer-events-none"/>
             </div>
           ) : (
             <button
               onClick={() => setIsConfigModalOpen(true)}
-              className="text-amber-600 dark:text-amber-400 flex items-center gap-1 font-medium hover:underline"
+              className="text-amber-600 hover:text-amber-700 flex items-center gap-1 font-semibold hover:underline"
             >
-              <AlertTriangle className="w-3 h-3"/>
+              <AlertTriangle className="w-3.5 h-3.5"/>
               去配置模型
             </button>
           )}
         </div>
 
+        {/* 消息对话区域 */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {currentThread?.messages.map((msg, index) => {
             const msgId = msg.id || index.toString();
@@ -807,20 +892,20 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
             return (
               <div
                 key={msgId}
-                className={`flex gap-3 text-sm ${
+                className={`flex gap-2.5 text-sm ${
                   msg.role === 'user' ? 'justify-end' : 'justify-start'
                 }`}
               >
                 {msg.role !== 'user' && (
-                  <div className="w-7 h-7 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center shrink-0">
-                    <Bot className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  <div className="w-7 h-7 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 flex items-center justify-center shrink-0">
+                    <Bot className="w-4 h-4" />
                   </div>
                 )}
                 <div
-                  className={`max-w-[90%] rounded-xl px-3.5 py-2.5 ${
+                  className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 ${
                     msg.role === 'user'
                       ? 'bg-indigo-600 text-white'
-                      : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 border border-zinc-200/60 dark:border-zinc-700/60 shadow-sm'
+                      : 'bg-gray-100 text-gray-800 border border-gray-200/80 shadow-2xs'
                   }`}
                 >
                   {msg.role === 'user' ? (
@@ -828,7 +913,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                       {msg.content}
                     </div>
                   ) : isCurrentGenerating && !detectedElements ? (
-                    <div className="flex items-center gap-2.5 py-1 text-xs text-indigo-600 dark:text-indigo-400 font-medium">
+                    <div className="flex items-center gap-2 py-1 text-xs text-indigo-600 font-semibold">
                       <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                       <span className="animate-pulse">正在智能规划 UI 架构与图元组件...</span>
                     </div>
@@ -845,15 +930,15 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                       ) : null}
 
                       {detectedElements && detectedElements.length > 0 && (
-                        <div className="mt-1 p-2.5 bg-white dark:bg-zinc-900 border border-indigo-100 dark:border-indigo-900/60 rounded-lg shadow-sm">
-                          <div className="flex items-center justify-between text-[11px] text-indigo-700 dark:text-indigo-300 font-medium mb-2">
+                        <div className="mt-1 p-2.5 bg-white border border-indigo-100 rounded-xl shadow-xs">
+                          <div className="flex items-center justify-between text-[11px] text-indigo-700 font-semibold mb-2">
                             <span className="flex items-center gap-1.5">
-                              <Palette className="w-3.5 h-3.5 text-indigo-500" />
+                              <Palette className="w-3.5 h-3.5 text-indigo-600" />
                               已构建 {detectedElements.length} 个标准图元
                             </span>
                             {isApplied && (
-                              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded font-medium">
-                                <Check className="w-3 h-3" /> 已自动上屏
+                              <span className="text-[10px] text-emerald-600 flex items-center gap-1 bg-emerald-50 px-1.5 py-0.5 rounded font-medium border border-emerald-200">
+                                <Check className="w-3 h-3" /> 已上屏
                               </span>
                             )}
                           </div>
@@ -861,14 +946,14 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                           <div className="flex items-center gap-2 mb-2">
                             <button
                               onClick={() => applyElementsToCanvas(detectedElements, 'append', msgId)}
-                              className="flex-1 px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-xs font-medium flex items-center justify-center gap-1 transition shadow-sm"
+                              className="flex-1 px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition shadow-2xs"
                             >
                               <Plus className="w-3.5 h-3.5" />
                               追加到画布
                             </button>
                             <button
                               onClick={() => applyElementsToCanvas(detectedElements, 'replace', msgId)}
-                              className="flex-1 px-2.5 py-1.5 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded text-xs font-medium flex items-center justify-center gap-1 transition"
+                              className="flex-1 px-2.5 py-1.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 transition"
                             >
                               <RefreshCw className="w-3.5 h-3.5" />
                               覆盖画布
@@ -879,14 +964,14 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                             onClick={() =>
                               setExpandedJsonIds((prev) => ({ ...prev, [msgId]: !prev[msgId] }))
                             }
-                            className="text-[11px] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 flex items-center gap-1"
+                            className="text-[11px] text-gray-400 hover:text-gray-600 flex items-center gap-1 font-medium"
                           >
                             <Code2 className="w-3 h-3" />
                             {isJsonExpanded ? '收起图元数据' : '查看图元 JSON 数据'}
                           </button>
 
                           {isJsonExpanded && (
-                            <pre className="mt-2 p-2 bg-zinc-950 text-zinc-300 rounded text-[10px] overflow-x-auto max-h-40">
+                            <pre className="mt-2 p-2 bg-zinc-950 text-zinc-300 rounded-lg text-[10px] overflow-x-auto max-h-40 font-mono">
                               {JSON.stringify(detectedElements, null, 2)}
                             </pre>
                           )}
@@ -896,8 +981,8 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                   )}
                 </div>
                 {msg.role === 'user' && (
-                  <div className="w-7 h-7 rounded-full bg-zinc-200 dark:bg-zinc-700 flex items-center justify-center shrink-0">
-                    <User className="w-4 h-4 text-zinc-600 dark:text-zinc-300" />
+                  <div className="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                    <User className="w-4 h-4" />
                   </div>
                 )}
               </div>
@@ -906,16 +991,17 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           <div ref={messagesEndRef} />
         </div>
 
+        {/* 历史会话抽屉面板 */}
         {showHistoryPanel && (
-          <div className="absolute top-[88px] left-0 right-0 bottom-0 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-sm z-30 flex flex-col border-t border-zinc-200 dark:border-zinc-800">
-            <div className="flex items-center justify-between px-4 py-2.5 bg-zinc-100 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
-              <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300 flex items-center gap-1.5">
-                <History className="w-3.5 h-3.5" />
+          <div className="absolute top-[88px] left-0 right-0 bottom-0 bg-white/95 backdrop-blur-xs z-30 flex flex-col border-t border-gray-200 animate-in fade-in duration-100">
+            <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-200">
+              <span className="text-xs font-bold text-gray-700 flex items-center gap-1.5">
+                <History className="w-3.5 h-3.5 text-indigo-600" />
                 全部历史会话 ({threads.length})
               </span>
               <button
                 onClick={() => setShowHistoryPanel(false)}
-                className="text-xs text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                className="text-xs text-gray-500 hover:text-gray-800 font-semibold"
               >
                 返回
               </button>
@@ -929,17 +1015,17 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                   <div
                     key={t.id}
                     onClick={() => handleSwitchThread(t.id)}
-                    className={`group flex items-center justify-between p-2.5 rounded-lg text-xs cursor-pointer transition ${
+                    className={`group flex items-center justify-between p-2.5 rounded-xl text-xs cursor-pointer transition ${
                       isActive
-                        ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 font-medium'
-                        : 'hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-transparent'
+                        ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold'
+                        : 'hover:bg-gray-100 text-gray-700 border border-transparent'
                     }`}
                   >
                     <div className="flex items-center gap-2 overflow-hidden flex-1 pr-2">
-                      <MessageSquare className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-indigo-600' : 'text-zinc-400'}`} />
+                      <MessageSquare className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-indigo-600' : 'text-gray-400'}`} />
                       <div className="truncate flex-1">
-                        <p className="truncate font-medium">{t.title || '无标题会话'}</p>
-                        <p className="text-[10px] text-zinc-400 flex items-center gap-1 mt-0.5">
+                        <p className="truncate font-semibold">{t.title || '无标题会话'}</p>
+                        <p className="text-[10px] text-gray-400 flex items-center gap-1 mt-0.5">
                           <Clock className="w-2.5 h-2.5" />
                           {msgCount} 条对话
                         </p>
@@ -949,7 +1035,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                     <button
                       onClick={(e) => handleDeleteCurrentOrTargetThread(e, t.id)}
                       title="删除该会话"
-                      className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-rose-500 rounded hover:bg-white dark:hover:bg-zinc-700 transition"
+                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-600 rounded hover:bg-white transition"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -960,7 +1046,8 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           </div>
         )}
 
-        <div className="p-3 border-t border-zinc-200 dark:border-zinc-800">
+        {/* 底部输入框 */}
+        <div className="p-3 border-t border-gray-200 bg-white">
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -984,7 +1071,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                   ? '输入想绘制的图表或 UI 原型...'
                   : '请先配置个人大模型'
               }
-              className="flex-1 text-xs px-3 py-2.5 bg-zinc-100 dark:bg-zinc-800 border-none rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-zinc-900 dark:text-zinc-100 disabled:opacity-60"
+              className="flex-1 text-xs px-3 py-2.5 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:border-indigo-500 focus:bg-white text-gray-900 disabled:opacity-60 transition"
             />
 
             {loading ? (
@@ -992,7 +1079,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                 type="button"
                 onClick={handleStopGeneration}
                 title="停止生成"
-                className="p-2.5 bg-rose-600 text-white rounded-lg hover:bg-rose-700 transition flex items-center justify-center shrink-0 shadow-sm"
+                className="p-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 transition flex items-center justify-center shrink-0 shadow-xs"
               >
                 <Square className="w-4 h-4 fill-white" />
               </button>
@@ -1001,7 +1088,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                 type="submit"
                 disabled={!input.trim()}
                 title="发送"
-                className="p-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition shrink-0 shadow-sm"
+                className="p-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-40 transition shrink-0 shadow-xs"
               >
                 <Send className="w-4 h-4" />
               </button>

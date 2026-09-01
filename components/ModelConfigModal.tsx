@@ -42,22 +42,19 @@ export function ModelConfigModal({
     message: string;
   }>({ type: null, message: '' });
 
-  // 打开弹窗时载入并合并配置
   useEffect(() => {
     if (!isOpen) return;
 
     setTestStatus({ type: null, message: '' });
 
-    // 1. 优先读取客户端本地保存的真实配置
+    // 1. 读取本地存储
     let localSaved: Partial<LLMConfig> = {};
     try {
       const stored = localStorage.getItem(LOCAL_STORAGE_LLM_KEY);
       if (stored) {
         localSaved = JSON.parse(stored);
       }
-    } catch (e) {
-      console.error('读取本地配置异常:', e);
-    }
+    } catch (e) {}
 
     // 2. 从服务端获取已同步配置
     fetch('/api/models')
@@ -70,7 +67,6 @@ export function ModelConfigModal({
         setConfig({
           protocol: DEFAULT_CONFIG.protocol,
           baseUrl: localSaved.baseUrl || remoteConfig.baseUrl || DEFAULT_CONFIG.baseUrl,
-          // 优先使用本地未脱敏的真实 Key，若无则使用服务端掩码或空串
           apiKey: localSaved.apiKey || remoteConfig.apiKey || '',
           models: localSaved.models || remoteConfig.models || DEFAULT_CONFIG.models,
           defaultModel:
@@ -80,9 +76,7 @@ export function ModelConfigModal({
         });
       })
       .catch(() => {
-        if (localSaved.apiKey) {
-          setHasSavedKey(true);
-        }
+        if (localSaved.apiKey) setHasSavedKey(true);
         setConfig((prev) => ({ ...prev, ...localSaved }));
       });
   }, [isOpen]);
@@ -124,7 +118,7 @@ export function ModelConfigModal({
 
       if (res.ok && data.success) {
         setHasSavedKey(true);
-        // 若输入的是新真实 Key，同步保存至 localStorage
+        // 若输入的是真实 Key，同步保存至 localStorage
         if (rawKey && !rawKey.startsWith('•••')) {
           localStorage.setItem(LOCAL_STORAGE_LLM_KEY, JSON.stringify(config));
         }
@@ -133,10 +127,11 @@ export function ModelConfigModal({
           type: 'success',
           message: '测试连通成功并已保存！',
         });
+        window.dispatchEvent(new Event('llm_config_updated'));
       } else {
         setTestStatus({
           type: 'error',
-          message: data.error || '连通性测试未通过，请核对 Base URL 与 API Key',
+          message: data.error || '连通性测试未通过，请检查 Base URL 与 API Key',
         });
       }
     } catch (err: any) {
@@ -181,11 +176,11 @@ export function ModelConfigModal({
       const data = await res.json();
 
       if (res.ok && data.success) {
-        // 同步持久化至本地存储供客户端即时调用
         if (rawKey && !rawKey.startsWith('•••')) {
           localStorage.setItem(LOCAL_STORAGE_LLM_KEY, JSON.stringify(config));
         }
 
+        window.dispatchEvent(new Event('llm_config_updated'));
         if (onSaved) {
           onSaved(config);
         }
@@ -209,7 +204,6 @@ export function ModelConfigModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 animate-in fade-in duration-150">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-gray-100">
-        {/* 头部标题与关闭按钮 */}
         <div className="px-6 pt-6 pb-4 flex items-start justify-between">
           <div>
             <h3 className="text-xl font-bold text-gray-900">用户大模型配置</h3>
@@ -226,7 +220,6 @@ export function ModelConfigModal({
           </button>
         </div>
 
-        {/* 测试与保存状态提示条 */}
         {testStatus.type && (
           <div className="px-6 mb-2">
             <div
@@ -246,7 +239,6 @@ export function ModelConfigModal({
           </div>
         )}
 
-        {/* 表单主体 */}
         <div className="px-6 py-2 space-y-4 max-h-[65vh] overflow-y-auto">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
@@ -359,7 +351,6 @@ export function ModelConfigModal({
           </div>
         </div>
 
-        {/* 底部按钮 */}
         <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between mt-4">
           <button
             type="button"

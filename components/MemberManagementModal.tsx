@@ -5,315 +5,286 @@ import {
   X,
   Users,
   UserPlus,
-  Shield,
   Trash2,
-  Mail,
-  Check,
-  Copy,
-  Crown,
-  ShieldCheck,
-  Eye,
+  Shield,
   Edit3,
+  Eye,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
+  Folder,
 } from 'lucide-react';
 
-export type MemberRole = 'owner' | 'admin' | 'editor' | 'viewer';
-
-export interface Member {
+export interface ProjectMember {
   id: string;
-  name: string;
-  email: string;
-  role: MemberRole;
-  avatarColor: string;
+  username: string;
+  email?: string;
+  role: 'admin' | 'editor' | 'viewer';
   joinedAt: string;
-  isCurrentUser?: boolean;
 }
 
 interface MemberManagementModalProps {
   isOpen: boolean;
   onClose: () => void;
+  projectId?: string;
+  projectName?: string;
 }
 
-// 升级缓存 Key 版本，自动覆盖清理旧的 Mock 用户
-const STORAGE_KEY_MEMBERS = 'excalidraw_plus_members_v2';
-
-// 仅保留当前登录账户
-const INITIAL_MEMBERS: Member[] = [
+const DEFAULT_MEMBERS: ProjectMember[] = [
   {
-    id: 'm-1',
-    name: 'admin (我)',
+    id: 'user-admin',
+    username: 'admin',
     email: 'admin@idlecatlabs.net',
-    role: 'owner',
-    avatarColor: 'bg-indigo-600',
-    joinedAt: '2026-08-01',
-    isCurrentUser: true,
+    role: 'admin',
+    joinedAt: '2026-01-01',
+  },
+  {
+    id: 'user-demo1',
+    username: 'designer_lily',
+    email: 'lily@company.com',
+    role: 'editor',
+    joinedAt: '2026-03-12',
+  },
+  {
+    id: 'user-demo2',
+    username: 'viewer_tom',
+    email: 'tom@company.com',
+    role: 'viewer',
+    joinedAt: '2026-05-20',
   },
 ];
 
-const ROLE_CONFIG: Record<MemberRole, { label: string; icon: any; color: string; desc: string }> = {
-  owner: {
-    label: '创建者 (所有者)',
-    icon: Crown,
-    color: 'text-amber-500 bg-amber-500/10 border-amber-500/20',
-    desc: '拥有最高权限，可管理项目与删除空间',
-  },
-  admin: {
-    label: '管理员',
-    icon: ShieldCheck,
-    color: 'text-indigo-500 bg-indigo-500/10 border-indigo-500/20',
-    desc: '可管理所有画板、成员权限与邀请新成员',
-  },
-  editor: {
-    label: '编辑者',
-    icon: Edit3,
-    color: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
-    desc: '可实时协作绘制、保存草图与使用 AI 助手',
-  },
-  viewer: {
-    label: '只读访客',
-    icon: Eye,
-    color: 'text-zinc-500 bg-zinc-500/10 border-zinc-500/20',
-    desc: '仅可查看与缩放浏览画布，不可修改内容',
-  },
-};
-
-const RANDOM_COLORS = [
-  'bg-blue-600',
-  'bg-purple-600',
-  'bg-pink-600',
-  'bg-teal-600',
-  'bg-rose-600',
-  'bg-cyan-600',
-  'bg-emerald-600',
-];
-
-export const MemberManagementModal: React.FC<MemberManagementModalProps> = ({
+export default function MemberManagementModal({
   isOpen,
   onClose,
-}) => {
-  const [members, setMembers] = useState<Member[]>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem(STORAGE_KEY_MEMBERS);
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-        } catch {}
-      }
-    }
-    return INITIAL_MEMBERS;
+  projectId = 'default-project',
+  projectName = '默认项目',
+}: MemberManagementModalProps) {
+  const [members, setMembers] = useState<ProjectMember[]>(DEFAULT_MEMBERS);
+  const [newUsername, setNewUsername] = useState<string>('');
+  const [newRole, setNewRole] = useState<'admin' | 'editor' | 'viewer'>('editor');
+  const [loading, setLoading] = useState<boolean>(false);
+  const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error' | null; text: string }>({
+    type: null,
+    text: '',
   });
 
-  const [inviteEmail, setInviteEmail] = useState<string>('');
-  const [inviteRole, setInviteRole] = useState<MemberRole>('editor');
-  const [copiedLink, setCopiedLink] = useState<boolean>(false);
+  const storageKey = `project_members_${projectId}`;
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY_MEMBERS, JSON.stringify(members));
+    if (!isOpen) return;
+    setStatusMsg({ type: null, text: '' });
+    try {
+      const local = localStorage.getItem(storageKey);
+      if (local) {
+        setMembers(JSON.parse(local));
+      } else {
+        setMembers(DEFAULT_MEMBERS);
+      }
+    } catch {
+      setMembers(DEFAULT_MEMBERS);
     }
-  }, [members]);
+  }, [isOpen, storageKey]);
+
+  const saveMembers = (updated: ProjectMember[]) => {
+    setMembers(updated);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(updated));
+    } catch (e) {}
+  };
 
   const handleAddMember = (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = inviteEmail.trim();
-    if (!trimmed) return;
-
-    if (members.some((m) => m.email.toLowerCase() === trimmed.toLowerCase())) {
-      alert('该邮箱用户已在成员列表中');
+    const uname = newUsername.trim();
+    if (!uname) {
+      setStatusMsg({ type: 'error', text: '请输入成员用户名或邮箱' });
       return;
     }
 
-    const randomColor = RANDOM_COLORS[Math.floor(Math.random() * RANDOM_COLORS.length)];
-    const username = trimmed.split('@')[0];
+    if (members.some((m) => m.username.toLowerCase() === uname.toLowerCase())) {
+      setStatusMsg({ type: 'error', text: '该成员已存在于当前项目中' });
+      return;
+    }
 
-    const newMember: Member = {
-      id: `m-${Date.now()}`,
-      name: username,
-      email: trimmed,
-      role: inviteRole,
-      avatarColor: randomColor,
-      joinedAt: '刚刚',
+    const newMem: ProjectMember = {
+      id: `mem-${Date.now()}`,
+      username: uname,
+      email: uname.includes('@') ? uname : `${uname}@company.com`,
+      role: newRole,
+      joinedAt: new Date().toISOString().split('T')[0],
     };
 
-    setMembers((prev) => [...prev, newMember]);
-    setInviteEmail('');
+    const updated = [newMem, ...members];
+    saveMembers(updated);
+    setNewUsername('');
+    setStatusMsg({ type: 'success', text: `已成功添加成员 ${uname}` });
+    setTimeout(() => setStatusMsg({ type: null, text: '' }), 2500);
   };
 
-  const handleRoleChange = (memberId: string, nextRole: MemberRole) => {
-    setMembers((prev) =>
-      prev.map((m) => (m.id === memberId ? { ...m, role: nextRole } : m))
-    );
+  const handleRoleChange = (memberId: string, role: 'admin' | 'editor' | 'viewer') => {
+    const updated = members.map((m) => (m.id === memberId ? { ...m, role } : m));
+    saveMembers(updated);
   };
 
-  const handleRemoveMember = (member: Member) => {
-    if (member.role === 'owner') {
-      alert('不可移除空间创建者');
+  const handleRemoveMember = (memberId: string, username: string) => {
+    if (username === 'admin') {
+      alert('不能移除默认主管理员');
       return;
     }
-    if (confirm(`确定将成员「${member.name} (${member.email})」移出团队吗？`)) {
-      setMembers((prev) => prev.filter((m) => m.id !== member.id));
-    }
-  };
-
-  const handleCopyInviteLink = () => {
-    const inviteUrl = `${window.location.origin}?invite=${Math.random().toString(36).slice(2, 10)}`;
-    navigator.clipboard.writeText(inviteUrl);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+    if (!confirm(`确定要将成员 "${username}" 移出当前项目吗？`)) return;
+    const updated = members.filter((m) => m.id !== memberId);
+    saveMembers(updated);
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-150">
-      <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-900/60">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden border border-gray-100 flex flex-col max-h-[85vh]">
+        {/* 头部 */}
+        <div className="px-6 pt-5 pb-4 border-b border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 flex items-center justify-center text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800/60">
-              <Users className="w-4 h-4" />
+            <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+              <Users className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                团队成员与协作权限
-              </h2>
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                管理协作空间的成员角色分配与访问权限 (共 {members.length} 人)
+              <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                项目成员权限管理
+                <span className="text-xs font-semibold px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full border border-gray-200">
+                  {projectName}
+                </span>
+              </h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                管理当前项目中成员的协同编辑与只读访问权限
               </p>
             </div>
           </div>
-
           <button
+            type="button"
             onClick={onClose}
-            className="p-1.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+            className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition"
           >
-            <X className="w-4 h-4" />
+            <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* 邀请栏 */}
-        <div className="p-6 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/30 dark:bg-zinc-900/30">
-          <form onSubmit={handleAddMember} className="flex flex-col sm:flex-row gap-2.5">
-            <div className="relative flex-1">
-              <Mail className="w-4 h-4 absolute left-3 top-2.5 text-zinc-400 pointer-events-none" />
-              <input
-                type="email"
-                required
-                value={inviteEmail}
-                onChange={(e) => setInviteEmail(e.target.value)}
-                placeholder="输入协作者邮箱 (如 user@company.com)..."
-                className="w-full pl-9 pr-3 py-2 text-xs bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-zinc-900 dark:text-zinc-100"
-              />
-            </div>
-
-            <select
-              value={inviteRole}
-              onChange={(e) => setInviteRole(e.target.value as MemberRole)}
-              className="px-3 py-2 text-xs bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-zinc-700 dark:text-zinc-200 font-medium"
+        {/* 状态提示条 */}
+        {statusMsg.type && (
+          <div className="px-6 pt-3">
+            <div
+              className={`flex items-center gap-2 p-2.5 rounded-xl text-xs font-medium ${
+                statusMsg.type === 'success'
+                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                  : 'bg-red-50 text-red-800 border border-red-200'
+              }`}
             >
-              <option value="editor">编辑者 (可协作绘制)</option>
-              <option value="admin">管理员 (可管理成员)</option>
-              <option value="viewer">只读访客 (仅查看)</option>
-            </select>
+              {statusMsg.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+              )}
+              <span>{statusMsg.text}</span>
+            </div>
+          </div>
+        )}
 
+        {/* 添加新成员表单 */}
+        <div className="px-6 pt-4 pb-3 bg-gray-50/60 border-b border-gray-100">
+          <form onSubmit={handleAddMember} className="flex items-center gap-2">
+            <input
+              type="text"
+              value={newUsername}
+              onChange={(e) => setNewUsername(e.target.value)}
+              placeholder="输入用户名或邮箱添加成员..."
+              className="flex-1 text-xs px-3.5 py-2.5 bg-white border border-gray-300 rounded-xl outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
+            />
+            <select
+              value={newRole}
+              onChange={(e) => setNewRole(e.target.value as any)}
+              className="text-xs px-3 py-2.5 bg-white border border-gray-300 rounded-xl outline-none text-gray-700 font-medium"
+            >
+              <option value="editor">编辑者（可编辑画板）</option>
+              <option value="admin">管理员（完全权限）</option>
+              <option value="viewer">浏览者（仅只读）</option>
+            </select>
             <button
               type="submit"
-              className="flex items-center justify-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-medium transition shadow-sm shrink-0"
+              className="flex items-center gap-1.5 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shrink-0 shadow-xs transition"
             >
               <UserPlus className="w-3.5 h-3.5" />
-              添加成员
+              <span>添加成员</span>
             </button>
           </form>
-
-          <div className="flex items-center justify-between mt-3 text-[11px] text-zinc-500">
-            <span>通过专属链接邀请协作者：</span>
-            <button
-              onClick={handleCopyInviteLink}
-              className="flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:underline font-medium"
-            >
-              {copiedLink ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
-              {copiedLink ? '邀请链接已复制' : '复制快捷邀请链接'}
-            </button>
-          </div>
         </div>
 
-        {/* 成员列表 */}
-        <div className="flex-1 overflow-y-auto p-6 divide-y divide-zinc-100 dark:divide-zinc-800/80">
-          {members.map((member) => {
-            const roleInfo = ROLE_CONFIG[member.role] || ROLE_CONFIG.viewer;
-            const RoleIcon = roleInfo.icon;
+        {/* 成员列表主体 */}
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-2.5 divide-y divide-gray-50">
+          <div className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">
+            当前成员列表（共 {members.length} 人）
+          </div>
 
-            return (
-              <div
-                key={member.id}
-                className="py-3.5 first:pt-0 last:pb-0 flex items-center justify-between gap-4"
-              >
-                {/* 头像与信息 */}
-                <div className="flex items-center gap-3 min-w-0 flex-1">
-                  <div
-                    className={`w-9 h-9 rounded-full ${member.avatarColor} text-white flex items-center justify-center font-semibold text-xs shrink-0 shadow-sm`}
-                  >
-                    {member.name.charAt(0).toUpperCase()}
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 truncate">
-                        {member.name}
-                      </span>
-                      {member.isCurrentUser && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 font-medium">
-                          当前账户
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[11px] text-zinc-400 truncate mt-0.5">{member.email}</p>
-                  </div>
+          {members.map((member) => (
+            <div
+              key={member.id}
+              className="pt-2.5 first:pt-0 flex items-center justify-between group"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-linear-to-tr from-indigo-500 to-purple-600 text-white flex items-center justify-center font-bold text-xs uppercase shadow-2xs">
+                  {member.username[0]}
                 </div>
-
-                {/* 角色与操作 */}
-                <div className="flex items-center gap-3 shrink-0">
-                  {member.role === 'owner' ? (
-                    <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border ${roleInfo.color}`}>
-                      <RoleIcon className="w-3.5 h-3.5" />
-                      <span>{roleInfo.label}</span>
-                    </div>
-                  ) : (
-                    <select
-                      value={member.role}
-                      onChange={(e) => handleRoleChange(member.id, e.target.value as MemberRole)}
-                      className="px-2.5 py-1 text-xs bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500 text-zinc-800 dark:text-zinc-200 font-medium"
-                    >
-                      <option value="admin">管理员</option>
-                      <option value="editor">编辑者</option>
-                      <option value="viewer">只读访客</option>
-                    </select>
-                  )}
-
-                  {!member.isCurrentUser && member.role !== 'owner' && (
-                    <button
-                      onClick={() => handleRemoveMember(member)}
-                      title="移出团队"
-                      className="p-1.5 text-zinc-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-gray-900">{member.username}</span>
+                    {member.username === 'admin' && (
+                      <span className="text-[10px] px-1.5 py-0.2 bg-amber-50 text-amber-700 border border-amber-200 rounded font-medium">
+                        拥有者
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-400 font-mono">{member.email}</p>
                 </div>
               </div>
-            );
-          })}
+
+              {/* 权限选择与移除 */}
+              <div className="flex items-center gap-2">
+                <select
+                  disabled={member.username === 'admin'}
+                  value={member.role}
+                  onChange={(e) => handleRoleChange(member.id, e.target.value as any)}
+                  className={`text-xs px-2.5 py-1.5 rounded-lg border font-semibold outline-none transition ${
+                    member.role === 'admin'
+                      ? 'bg-purple-50 text-purple-700 border-purple-200'
+                      : member.role === 'editor'
+                      ? 'bg-blue-50 text-blue-700 border-blue-200'
+                      : 'bg-gray-50 text-gray-600 border-gray-200'
+                  } disabled:opacity-60`}
+                >
+                  <option value="admin">管理员</option>
+                  <option value="editor">编辑者</option>
+                  <option value="viewer">浏览者</option>
+                </select>
+
+                {member.username !== 'admin' && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveMember(member.id, member.username)}
+                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
+                    title="移出项目"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
 
-        {/* 底部 */}
-        <div className="px-6 py-3 bg-zinc-50 dark:bg-zinc-900/80 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-between text-[11px] text-zinc-400">
-          <span className="flex items-center gap-1">
-            <Shield className="w-3.5 h-3.5 text-indigo-500" />
-            团队协作与权限控制已生效
-          </span>
+        {/* 底部关闭 */}
+        <div className="px-6 py-3.5 bg-gray-50 border-t border-gray-100 flex justify-end">
           <button
+            type="button"
             onClick={onClose}
-            className="px-4 py-1.5 bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 rounded-lg text-xs font-medium transition"
+            className="px-4 py-2 bg-white hover:bg-gray-100 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 transition"
           >
             完成
           </button>
@@ -321,6 +292,4 @@ export const MemberManagementModal: React.FC<MemberManagementModalProps> = ({
       </div>
     </div>
   );
-};
-
-export default MemberManagementModal;
+}
