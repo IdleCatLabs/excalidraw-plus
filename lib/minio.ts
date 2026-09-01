@@ -1,23 +1,18 @@
 import * as Minio from 'minio';
 
-// 严格清洗 Endpoint：去除 http://、https://、末尾斜杠以及附带的端口
-function cleanEndpoint(rawEndpoint: string): string {
-  if (!rawEndpoint) return 'minio';
-  return rawEndpoint
-    .replace(/^https?:\/\//i, '') // 移除 http:// 或 https://
-    .split('/')[0]                // 移除路径
-    .split(':')[0];               // 移除端口（端口由 port 参数单独指定）
+function resolveMinioEndpoint(): string {
+  if (process.env.MINIO_ENDPOINT) {
+    return process.env.MINIO_ENDPOINT
+      .replace(/^https?:\/\//i, '')
+      .split('/')[0]
+      .split(':')[0];
+  }
+  // 生产环境容器内走 minio 服务名，本地调试默认回退 127.0.0.1
+  return process.env.NODE_ENV === 'production' ? 'minio' : '127.0.0.1';
 }
 
-const rawEndpoint = process.env.MINIO_ENDPOINT || 'minio';
-const endpoint = cleanEndpoint(rawEndpoint);
-
-const port = parseInt(
-  process.env.MINIO_PORT ||
-  (process.env.MINIO_ENDPOINT?.includes(':') ? process.env.MINIO_ENDPOINT.split(':').pop()! : '9000'),
-  10
-) || 9000;
-
+const endpoint = resolveMinioEndpoint();
+const port = parseInt(process.env.MINIO_PORT || '9000', 10);
 const useSSL = process.env.MINIO_USE_SSL === 'true';
 const accessKey =
   process.env.MINIO_ACCESS_KEY ||
@@ -38,18 +33,15 @@ export const minioClient = new Minio.Client({
 
 export const BUCKET_NAME = process.env.MINIO_BUCKET_NAME || 'excalidraw';
 
-/**
- * 确保存储桶存在
- */
 export async function ensureBucketExists(): Promise<void> {
   try {
     const exists = await minioClient.bucketExists(BUCKET_NAME);
     if (!exists) {
       await minioClient.makeBucket(BUCKET_NAME, 'us-east-1');
-      console.log(`[MinIO] Bucket "${BUCKET_NAME}" created successfully.`);
+      console.log(`[MinIO] Bucket "${BUCKET_NAME}" created.`);
     }
   } catch (error: any) {
-    console.error(`[MinIO] Bucket check/creation failed:`, error.message);
-    throw error;
+    console.error(`[MinIO] Error checking/creating bucket "${BUCKET_NAME}":`, error);
+    throw new Error(`MinIO 存储桶连接异常: ${error.message || error.code}`);
   }
 }

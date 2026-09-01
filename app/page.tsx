@@ -67,37 +67,47 @@ export default function WorkspacePage() {
     router.refresh();
   };
 
-  const handleSave = async () => {
-    if (!excalidrawRef.current || !boardId) return;
-    setSaving(true);
-    const sceneData = excalidrawRef.current.getSceneData();
-
+  const handleSaveToCloud = async () => {
     try {
-      const res = await fetch("/api/scenes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          boardId,
-          projectId,
-          name: boardName,
-          data: {
-            ...sceneData,
-            threads,
-            activeThreadId,
+      if (!excalidrawRef.current) {
+        alert('画板尚未加载完成');
+        return;
+      }
+
+      // 1. 获取完整画布数据
+      const elements = excalidrawRef.current.getSceneElements?.() || [];
+      const appState = excalidrawRef.current.getAppState?.() || {};
+      const files = excalidrawRef.current.getFiles?.() || {};
+
+      const payload = {
+        boardId: currentBoardId || 'default-board',
+        sceneData: {
+          elements,
+          appState: {
+            viewBackgroundColor: appState.viewBackgroundColor || '#f5f5f7',
           },
-        }),
+          files,
+        },
+      };
+
+      // 2. 发起保存请求
+      const res = await fetch('/api/scenes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
 
-      if (res.ok) {
-        setSavedSuccess(true);
-        setTimeout(() => setSavedSuccess(false), 2000);
-      } else {
-        alert("保存失败，请检查 MinIO 连接");
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status} ${res.statusText}`);
       }
-    } catch {
-      alert("保存网络异常");
-    } finally {
-      setSaving(false);
+
+      alert('保存成功！');
+    } catch (err: any) {
+      console.error('Save to Cloud Error:', err);
+      // 抛出真实的底层异常信息
+      alert(`保存失败: ${err.message || '网络连接异常'}`);
     }
   };
 

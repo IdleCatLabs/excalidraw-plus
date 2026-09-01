@@ -596,12 +596,22 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
       });
 
       if (!res.ok) {
-        const errData = await res.json();
-        if (errData.code === 'NO_LLM_CONFIG') {
-          setIsConfigured(false);
-          setIsConfigModalOpen(true);
-        }
-        throw new Error(errData.error || '生成失败');
+        let errorMsg = `接口请求失败 (HTTP ${res.status})`;
+        try {
+          const rawText = await res.text();
+          try {
+            const errData = JSON.parse(rawText);
+            if (errData.code === 'NO_LLM_CONFIG') {
+              setIsConfigured(false);
+              setIsConfigModalOpen(true);
+            }
+            errorMsg = errData.error || errData.message || errorMsg;
+          } catch {
+            const cleanText = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+            errorMsg = cleanText.slice(0, 200) || errorMsg;
+          }
+        } catch {}
+        throw new Error(errorMsg);
       }
 
       const reader = res.body?.getReader();
@@ -676,7 +686,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
         style={{ width: `${sidebarWidth}px` }}
         className="relative h-full bg-white dark:bg-zinc-900 border-l border-zinc-200 dark:border-zinc-800 shadow-xl flex flex-col shrink-0 select-text transition-[width] duration-75 ease-out"
       >
-        {/* 左侧可拖拽拉伸边条 */}
         <div
           onMouseDown={handleMouseDown}
           className={`absolute left-0 top-0 bottom-0 w-2 -ml-1 cursor-col-resize z-50 group flex items-center justify-center hover:bg-indigo-500/20 transition ${
@@ -687,7 +696,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           <div className="w-0.5 h-8 bg-zinc-300 dark:bg-zinc-700 group-hover:bg-indigo-500 rounded transition" />
         </div>
 
-        {/* 顶部 Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-800">
           <div className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-indigo-500"/>
@@ -731,7 +739,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           </div>
         </div>
 
-        {/* 当前会话标题栏与快捷切换 */}
         <div className="px-4 py-1.5 bg-zinc-100/70 dark:bg-zinc-800/40 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between text-xs">
           <button
             onClick={() => setShowHistoryPanel((prev) => !prev)}
@@ -747,7 +754,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           </span>
         </div>
 
-        {/* 模型选择栏 */}
         <div className="px-4 py-2 bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between text-xs">
           <span className="text-zinc-500">当前模型:</span>
           {isConfigured && models.length > 0 ? (
@@ -776,7 +782,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           )}
         </div>
 
-        {/* 对话消息区 */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {currentThread?.messages.map((msg, index) => {
             const msgId = msg.id || index.toString();
@@ -794,7 +799,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
             const isApplied = appliedMessageIds[msgId];
             const isJsonExpanded = expandedJsonIds[msgId];
 
-            // 过滤掉 JSON 代码块，只留文字描述
             const cleanText = msg.content
               .replace(/```(?:json)?[\s\S]*?(?:```|$)/gi, '')
               .replace(/\{[\s\S]*?\}/g, '')
@@ -819,19 +823,16 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                       : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 border border-zinc-200/60 dark:border-zinc-700/60 shadow-sm'
                   }`}
                 >
-                  {/* 用户消息 */}
                   {msg.role === 'user' ? (
                     <div className="whitespace-pre-wrap break-words text-xs leading-relaxed">
                       {msg.content}
                     </div>
                   ) : isCurrentGenerating && !detectedElements ? (
-                    /* 正在思考绘制时的专属动画卡片，杜绝裸露 JSON 闪烁 */
                     <div className="flex items-center gap-2.5 py-1 text-xs text-indigo-600 dark:text-indigo-400 font-medium">
                       <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                       <span className="animate-pulse">正在智能规划 UI 架构与图元组件...</span>
                     </div>
                   ) : (
-                    /* 助手的正常文字回复 */
                     <div>
                       {cleanText ? (
                         <div className="whitespace-pre-wrap break-words text-xs leading-relaxed mb-2">
@@ -843,7 +844,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
                         </div>
                       ) : null}
 
-                      {/* 绘制完成状态卡片 */}
                       {detectedElements && detectedElements.length > 0 && (
                         <div className="mt-1 p-2.5 bg-white dark:bg-zinc-900 border border-indigo-100 dark:border-indigo-900/60 rounded-lg shadow-sm">
                           <div className="flex items-center justify-between text-[11px] text-indigo-700 dark:text-indigo-300 font-medium mb-2">
@@ -906,7 +906,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           <div ref={messagesEndRef} />
         </div>
 
-        {/* 历史会话下拉面板 */}
         {showHistoryPanel && (
           <div className="absolute top-[88px] left-0 right-0 bottom-0 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-sm z-30 flex flex-col border-t border-zinc-200 dark:border-zinc-800">
             <div className="flex items-center justify-between px-4 py-2.5 bg-zinc-100 dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700">
@@ -961,7 +960,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           </div>
         )}
 
-        {/* 底部输入栏 */}
         <div className="p-3 border-t border-zinc-200 dark:border-zinc-800">
           <form
             onSubmit={(e) => {

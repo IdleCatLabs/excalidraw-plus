@@ -13,7 +13,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onCl
   const [baseUrl, setBaseUrl] = useState('https://khub.idlecatlabs.net/v1');
   const [apiKey, setApiKey] = useState('');
   const [modelsText, setModelsText] = useState('deepseek-v4-pro,deepseek-v4-flash,qwen3.7-plus,glm-5.2');
-  const [defaultModel, setDefaultModel] = useState('deepseek-v4-flash');
+  const [defaultModel, setDefaultModel] = useState('qwen3.7-plus');
   const [maxTokens, setMaxTokens] = useState('4096');
   const [temperature, setTemperature] = useState('0.7');
 
