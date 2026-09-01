@@ -81,11 +81,14 @@ export default function ExcalidrawWrapper({
     if (apiRef.current !== api) {
       apiRef.current = api;
       setIsApiReady(true);
+      if (typeof window !== 'undefined') {
+        (window as any).__EXCALIDRAW_API__ = api;
+      }
       onApiReadyRef.current?.(api);
     }
   }, []);
 
-  // 严格按画板 ID 同步远端数据
+  // 严格按画板 ID 同步远端数据并保护 AppState
   useEffect(() => {
     const api = apiRef.current;
     if (!api || !sceneData) return;
@@ -98,10 +101,12 @@ export default function ExcalidrawWrapper({
         const elements = sceneData.elements || [];
         const appState = sceneData.appState || {};
         const files = sceneData.files || {};
+        const currentAppState = typeof api.getAppState === 'function' ? api.getAppState() : {};
 
         api.updateScene({
           elements,
           appState: {
+            ...currentAppState,
             ...appState,
             collaborators: new Map(),
           },
@@ -111,10 +116,14 @@ export default function ExcalidrawWrapper({
 
         if (elements.length > 0) {
           setTimeout(() => {
-            api.scrollToContent(elements, {
-              fitToContent: true,
-              animate: true,
-            });
+            if (typeof api.scrollToContent === 'function') {
+              try {
+                api.scrollToContent(elements, {
+                  fitToContent: true,
+                  animate: true,
+                });
+              } catch (e) {}
+            }
           }, 80);
         }
       } catch (err) {
@@ -151,14 +160,6 @@ export default function ExcalidrawWrapper({
                 icon={<Save className="w-4 h-4" />}
               >
                 保存画板到云端
-              </MainMenu.Item>
-            )}
-            {onOpenModelConfig && (
-              <MainMenu.Item
-                onSelect={onOpenModelConfig}
-                icon={<Settings className="w-4 h-4" />}
-              >
-                大模型配置
               </MainMenu.Item>
             )}
             {onOpenProjectDrawer && (

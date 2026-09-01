@@ -63,34 +63,40 @@ export interface AiSidebarProps {
   [key: string]: any;
 }
 
-// 规范化 Excalidraw 图元数据结构
+// 安全数值转换函数：防止任何 NaN 导致 Excalidraw 视口崩溃
+function cleanNum(val: any, fallback: number = 0): number {
+  const n = Number(val);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// 规范化并清洗 Excalidraw 图元数据
 function normalizeExcalidrawElement(raw: any, index: number): any {
-  const id = raw.id || `elem_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`;
-  const type = raw.type || 'rectangle';
-  const x = Number(raw.x) || 0;
-  const y = Number(raw.y) || 0;
-  const width = Number(raw.width) || 120;
-  const height = Number(raw.height) || 60;
-  const strokeColor = raw.strokeColor || '#09090b';
-  const backgroundColor = raw.backgroundColor || (type === 'text' ? 'transparent' : '#ffffff');
+  const id = String(raw.id || `elem_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`);
+  const type = raw.type && typeof raw.type === 'string' ? raw.type.toLowerCase() : 'rectangle';
+  const x = cleanNum(raw.x, 100);
+  const y = cleanNum(raw.y, 100);
+  let width = cleanNum(raw.width, 120);
+  let height = cleanNum(raw.height, 60);
+
+  const strokeColor = typeof raw.strokeColor === 'string' ? raw.strokeColor : '#1e1e1e';
+  const backgroundColor = typeof raw.backgroundColor === 'string' ? raw.backgroundColor : (type === 'text' ? 'transparent' : '#ffffff');
   const fillStyle = raw.fillStyle || 'solid';
-  const strokeWidth = Number(raw.strokeWidth) || (type === 'rectangle' ? 2 : 1.5);
+  const strokeWidth = cleanNum(raw.strokeWidth, type === 'rectangle' ? 2 : 1.5);
   const strokeStyle = raw.strokeStyle || 'solid';
-  const roughness = Number(raw.roughness) ?? 0;
-  const opacity = Number(raw.opacity) || 100;
+  const roughness = cleanNum(raw.roughness, 0);
+  const opacity = cleanNum(raw.opacity, 100);
   const groupIds = Array.isArray(raw.groupIds) ? raw.groupIds : [];
-  const roundness = raw.roundness || (type === 'rectangle' ? { type: 3 } : null);
-  const seed = Number(raw.seed) || Math.floor(Math.random() * 100000);
-  const version = Number(raw.version) || 1;
-  const versionNonce = Number(raw.versionNonce) || Math.floor(Math.random() * 100000);
+  const seed = cleanNum(raw.seed, Math.floor(Math.random() * 100000));
+  const version = cleanNum(raw.version, 1);
+  const versionNonce = cleanNum(raw.versionNonce, Math.floor(Math.random() * 100000));
 
   const baseElement = {
     id,
     type,
     x,
     y,
-    width,
-    height,
+    width: Math.max(width, 10),
+    height: Math.max(height, 10),
     angle: 0,
     strokeColor,
     backgroundColor,
@@ -101,12 +107,12 @@ function normalizeExcalidrawElement(raw: any, index: number): any {
     opacity,
     groupIds,
     frameId: null,
-    roundness,
+    roundness: type === 'rectangle' ? { type: 3 } : null,
     seed,
     version,
     versionNonce,
     isDeleted: false,
-    boundElements: Array.isArray(raw.boundElements) ? raw.boundElements : null,
+    boundElements: null,
     updated: Date.now(),
     link: null,
     locked: false,
@@ -114,35 +120,43 @@ function normalizeExcalidrawElement(raw: any, index: number): any {
 
   if (type === 'text') {
     const text = String(raw.text || raw.rawText || raw.label || 'Text');
-    const fontSize = Number(raw.fontSize) || 16;
+    const fontSize = cleanNum(raw.fontSize, 16);
+    const estimatedWidth = Math.max(cleanNum(raw.width, 0), text.length * fontSize * 0.65, 30);
+    const estimatedHeight = Math.max(cleanNum(raw.height, 0), fontSize * 1.35, 20);
+
     return {
       ...baseElement,
+      width: estimatedWidth,
+      height: estimatedHeight,
       text,
       fontSize,
-      fontFamily: Number(raw.fontFamily) || 1,
+      fontFamily: 1,
       textAlign: raw.textAlign || 'left',
       verticalAlign: raw.verticalAlign || 'top',
       baseline: fontSize,
-      containerId: raw.containerId || null,
+      containerId: null,
       originalText: text,
       lineHeight: 1.25,
     };
   }
 
   if (type === 'arrow' || type === 'line') {
-    const points =
-      Array.isArray(raw.points) && raw.points.length > 0
-        ? raw.points
-        : [
-            [0, 0],
-            [width, height],
-          ];
+    let points: [number, number][] = [];
+    if (Array.isArray(raw.points) && raw.points.length > 0) {
+      points = raw.points.map((p: any) => [cleanNum(p[0], 0), cleanNum(p[1], 0)]);
+    } else {
+      points = [
+        [0, 0],
+        [baseElement.width, baseElement.height],
+      ];
+    }
+
     return {
       ...baseElement,
       points,
       lastCommittedPoint: null,
-      startBinding: raw.startBinding || null,
-      endBinding: raw.endBinding || null,
+      startBinding: null,
+      endBinding: null,
       startArrowhead: type === 'arrow' ? raw.startArrowhead || null : null,
       endArrowhead: type === 'arrow' ? raw.endArrowhead || 'arrow' : null,
     };
@@ -151,7 +165,7 @@ function normalizeExcalidrawElement(raw: any, index: number): any {
   return baseElement;
 }
 
-// 从大模型返回的内容中精准提取并修复 JSON 图元数据
+// 从返回内容中提取 JSON 图元列表
 function extractElementsFromContent(content: string): any[] | null {
   if (!content || typeof content !== 'string') return null;
 
@@ -317,7 +331,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
 
   const messagesEndRef = useRef<any>(null);
 
-  // 初始化加载侧边栏宽度
   useEffect(() => {
     const savedWidth = localStorage.getItem('excalidraw_plus_ai_sidebar_width');
     if (savedWidth) {
@@ -328,7 +341,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
     }
   }, []);
 
-  // 左右拖拽调节宽度处理
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     setIsResizing(true);
@@ -363,7 +375,6 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
     };
   }, [isResizing, handleMouseMove, handleMouseUp]);
 
-  // 核心修复：全面识别多种数据格式与 LocalStorage，解决“去配置模型”误报
   const fetchModels = async () => {
     try {
       let localConfig: Partial<LLMConfig> = {};
@@ -433,7 +444,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentThread?.messages, loading]);
 
-  // 将 AI 生成的图元自动追加或覆盖至画布
+  // 核心修复：图元安全追加/覆盖上屏，严密保护已有图元和视口 appState
   const applyElementsToCanvas = async (
     rawElements: any[],
     mode: 'append' | 'replace' = 'append',
@@ -458,27 +469,38 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
 
       if (api) {
         let finalElements = validElements;
+
+        // 保护已有画布内容：模式为追加时，完整保留画布上已有图元
         if (mode === 'append' && typeof api.getSceneElements === 'function') {
           const currentElements = api.getSceneElements() || [];
           finalElements = [...currentElements, ...validElements];
         }
 
+        // 保护 AppState：必须深度继承当前 appState，防止 zoom/scroll 变成 undefined/NaN
+        const currentAppState = typeof api.getAppState === 'function' ? api.getAppState() : {};
+
         if (typeof api.updateScene === 'function') {
           api.updateScene({
             elements: finalElements,
-            appState: { viewBackgroundColor: '#ffffff' },
+            appState: {
+              ...currentAppState,
+              collaborators: new Map(),
+            },
             commitToHistory: true,
           });
         }
 
+        // 视口平滑聚焦定位
         setTimeout(() => {
           if (typeof api.scrollToContent === 'function') {
-            api.scrollToContent(validElements, {
-              fitToContent: true,
-              animate: true,
-            });
+            try {
+              api.scrollToContent(validElements, {
+                fitToContent: true,
+                animate: true,
+              });
+            } catch (e) {}
           }
-        }, 120);
+        }, 80);
       }
 
       if (typeof window !== 'undefined') {
@@ -727,6 +749,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
         }
       }
 
+      // 提取并自动上屏
       const detectedElements = extractElementsFromContent(fullContent);
       if (detectedElements && detectedElements.length > 0) {
         await applyElementsToCanvas(detectedElements, 'append', assistantMsgId);
@@ -767,7 +790,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
         style={{ width: `${sidebarWidth}px` }}
         className="relative h-full bg-white border-l border-gray-200 shadow-xl flex flex-col shrink-0 select-text transition-[width] duration-75 ease-out"
       >
-        {/* 左侧自由拖拽把手 */}
+        {/* 左侧可左右拖拽调宽把手 */}
         <div
           onMouseDown={handleMouseDown}
           className={`absolute left-0 top-0 bottom-0 w-2 -ml-1 cursor-col-resize z-50 group flex items-center justify-center hover:bg-indigo-500/20 transition ${
@@ -866,7 +889,7 @@ export const AiSidebar: React.FC<AiSidebarProps> = ({
           )}
         </div>
 
-        {/* 消息对话区域 */}
+        {/* 消息对话主体 */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {currentThread?.messages.map((msg, index) => {
             const msgId = msg.id || index.toString();
